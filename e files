@@ -1,0 +1,17 @@
+[33mcommit cbc86135f4f42c4adebb4dc5762eaf74b5d9b341[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: sriram0907 <sxiram07@gmail.com>
+Date:   Sat Sep 19 20:37:54 2026 +0530
+
+    version before handling edge cases
+
+ backend/__pycache__/extractor.cpython-314.pyc | Bin [31m8586[m -> [32m8610[m bytes
+ backend/__pycache__/matcher.cpython-314.pyc   | Bin [31m7272[m -> [32m7017[m bytes
+ backend/__pycache__/pipeline.cpython-314.pyc  | Bin [31m11644[m -> [32m11645[m bytes
+ backend/extractor.py                          |   4 [32m+[m[31m-[m
+ backend/matcher.py                            |  12 [32m+[m[31m--[m
+ backend/pipeline.py                           |   2 [32m+[m[31m-[m
+ data/harmonization.db                         |   0
+ data/matches.db                               |   0
+ db/harmonize.db                               | Bin [31m913408[m -> [32m913408[m bytes
+ validate_matches.py                           | 133 [32m++++++++++++++++++++++++++[m
+ 10 files changed, 140 insertions(+), 11 deletions(-)

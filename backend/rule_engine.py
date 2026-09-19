@@ -59,10 +59,11 @@ def check_hard_constraints(attrs_a: dict, attrs_b: dict, category: str) -> dict:
 
         evidence[attr] = {"item_a": attrs_a.get(attr), "item_b": attrs_b.get(attr)}
 
-        if val_a == "" and val_b == "":
-            # Both unknown — skip, don't penalize
-            evidence[attr]["match"] = None  # unknown
-            logger.info(f"    ? {attr}: both unknown — skipped")
+        if val_a == "" or val_b == "":
+            # Missing critical attribute(s) - block match
+            failed_attributes.append(attr)
+            evidence[attr]["match"] = False
+            logger.info(f"    ❌ {attr}: missing critical value(s) — match blocked")
         elif val_a == val_b:
             matched_attributes.append(attr)
             evidence[attr]["match"] = True
