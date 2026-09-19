@@ -190,7 +190,7 @@ def run_pipeline(csv_path: str = "data/cpse_variants.csv"):
             if match_type in ["Identical", "Duplicate"]:
                 status = "auto-approved"
             elif match_type == "No Match":
-                status = "ignored"
+                status = "rejected"
 
             # Build evidence
             evidence = {

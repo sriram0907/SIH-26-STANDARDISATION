@@ -166,7 +166,7 @@ def extract_bolt_attributes(description: str) -> dict:
         (r"\bDIN\s*(\d+)\b", "DIN"),
         (r"\bISO\s*(\d+)\b", "ISO"),
         (r"\bIS\s*(\d+)\b", "IS"),
-        (r"\bASTM\s*([A-Z]\d+)\b", "ASTM"),
+        (r"\bASTM\s*(?!B7\b)([A-Z]\d+)\b", "ASTM"),
     ]
     for pattern, prefix in std_patterns:
         match = re.search(pattern, description, re.IGNORECASE)
@@ -204,7 +204,7 @@ def extract_valve_attributes(description: str) -> dict:
         attrs["size"] = f'{size_match.group(1)}"'
 
     # Pressure rating: 150#, 150 Class, 150 CL, 150LB, etc.
-    pr_match = re.search(r"(\d+)\s*(?:#|Class|CL|LB)\b", description, re.IGNORECASE)
+    pr_match = re.search(r"(\d+)\s*(?:#|Class|CL|LB)(?:\b|(?=\s|$))", description, re.IGNORECASE)
     if pr_match:
         attrs["pressure_rating"] = f"{pr_match.group(1)}#"
 

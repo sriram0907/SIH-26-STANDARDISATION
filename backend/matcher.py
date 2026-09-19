@@ -116,12 +116,8 @@ def classify_match(score: float, rule_result: dict, attrs_a: dict, attrs_b: dict
     if score >= 95:
         logger.info(f"  📋 Classification: Identical (score={score:.1f}%, all attributes match)")
         return "Identical", score
-    elif score >= 85:
-        logger.info(f"  📋 Classification: Duplicate (score={score:.1f}%, attributes match, minor wording diff)")
-        return "Duplicate", score
-    elif score >= 80:
-        logger.info(f"  📋 Classification: Near-Duplicate (score={score:.1f}%)")
-        return "Near-Duplicate", score
     else:
-        logger.info(f"  📋 Classification: No Match (score={score:.1f}% below threshold)")
-        return "No Match", score
+        # All attributes match perfectly, but raw text similarity was low. Still a Duplicate!
+        adjusted_score = max(score, 85.0)
+        logger.info(f"  📋 Classification: Duplicate (score={score:.1f}%, capped to {adjusted_score:.1f}%, wording differs but attributes match)")
+        return "Duplicate", adjusted_score
