@@ -114,6 +114,7 @@ st.markdown("""
     /* Status badges */
     .status-pending  { color: #ffa751; }
     .status-approved { color: #43e97b; }
+    .status-auto-approved { color: #43e97b; }
     .status-rejected { color: #ff6b6b; }
 
     /* Sidebar styling */
@@ -175,6 +176,50 @@ def get_badge_class(match_type: str) -> str:
         "No Match": "badge-no-match",
     }
     return mapping.get(match_type, "")
+
+
+def render_evidence_details(match):
+    """Render the evidence details for a match pair in an expander."""
+    with st.expander(f"📄 Evidence Details — Pair #{match['id']}", expanded=False):
+        evidence = match.get("evidence", {})
+        if isinstance(evidence, str):
+            try:
+                evidence = json.loads(evidence)
+            except json.JSONDecodeError:
+                evidence = {}
+
+        rule_ev = evidence.get("rule_engine", {})
+        ai_ev = evidence.get("ai_matching", {})
+
+        col_ev1, col_ev2 = st.columns(2)
+
+        with col_ev1:
+            st.markdown("**Rule Engine Results:**")
+            passed = rule_ev.get("passed", False)
+            st.markdown(f"- Hard constraints: {'✅ PASSED' if passed else '❌ FAILED'}", unsafe_allow_html=True)
+            if rule_ev.get("matched_attributes"):
+                st.markdown(f"- Matched: {', '.join(rule_ev['matched_attributes'])}", unsafe_allow_html=True)
+            if rule_ev.get("failed_attributes"):
+                st.markdown(f"- ❌ Differing: **{', '.join(rule_ev['failed_attributes'])}**", unsafe_allow_html=True)
+            if rule_ev.get("non_critical_diffs"):
+                st.markdown(f"- ⚠️ Non-critical diffs: {', '.join(rule_ev['non_critical_diffs'])}", unsafe_allow_html=True)
+            if rule_ev.get("interchangeable_diffs"):
+                st.markdown(f"- 🔄 Interchangeable diffs: {', '.join(rule_ev['interchangeable_diffs'])}", unsafe_allow_html=True)
+
+            # Attribute comparison table
+            attr_details = rule_ev.get("attribute_details", {})
+            if attr_details:
+                st.markdown("**Attribute Comparison:**")
+                for attr, detail in attr_details.items():
+                    icon = "✅" if detail.get("match") else "❌"
+                    st.markdown(f"  {icon} `{attr}`: `{detail.get('item_a', 'N/A')}` vs `{detail.get('item_b', 'N/A')}`", unsafe_allow_html=True)
+
+        with col_ev2:
+            st.markdown("**AI Matching Scores:**")
+            st.markdown(f"- Cosine similarity: `{ai_ev.get('cosine_similarity', 'N/A')}`", unsafe_allow_html=True)
+            st.markdown(f"- Fuzz ratio: `{ai_ev.get('fuzz_ratio', 'N/A')}`", unsafe_allow_html=True)
+            st.markdown(f"- Combined score: `{ai_ev.get('combined_score', 'N/A')}`", unsafe_allow_html=True)
+            st.markdown(f"- Signal: `{evidence.get('signal', 'N/A')}`", unsafe_allow_html=True)
 
 
 def render_header():
@@ -342,9 +387,12 @@ def render_review_queue():
     with col_filter1:
         status_filter = st.selectbox(
             "Filter by status",
-            ["all", "pending", "approved", "rejected"],
+            ["pending", "all", "approved", "rejected"],
             index=0,
         )
+    with col_filter2:
+        show_auto_approved_evidence = st.checkbox("Show Auto-Approved evidence", value=False)
+        show_rejected_evidence = st.checkbox("Show Rejected/No-Match evidence", value=False)
 
     # Fetch matches
     if status_filter == "all":
@@ -370,78 +418,33 @@ def render_review_queue():
 
         # Card container
         with st.container():
-            st.markdown(f"""
-            <div style="background: #1a1a2e; border-radius: 12px; padding: 1.2rem;
-                        margin-bottom: 1rem; border: 1px solid #2d2d44;
-                        box-shadow: 0 4px 16px rgba(0,0,0,0.15);">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                    <span class="badge {badge_class}">{match_type}</span>
-                    <span style="color: #888; font-size: 0.85rem;">
-                        Confidence: <strong style="color: white;">{confidence:.1f}%</strong>
-                        &nbsp;|&nbsp;
-                        Status: <span class="{status_class}"><strong>{status.upper()}</strong></span>
-                        {f'&nbsp;|&nbsp; CNMC: <strong style="color: #43e97b;">{match["cnmc_id"]}</strong>' if match.get("cnmc_id") else ''}
-                    </span>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 0.8rem;">
-                    <div style="background: #16213e; padding: 0.8rem; border-radius: 8px;">
-                        <div style="color: #4facfe; font-size: 0.75rem; font-weight: 600; margin-bottom: 0.3rem;">
-                            {match["cpse_a"]} — {match["code_a"]}
-                        </div>
-                        <div style="color: #ccc; font-size: 0.85rem;">{match["desc_a"]}</div>
-                        <div style="color: #888; font-size: 0.75rem; margin-top: 0.3rem;">
-                            → {match.get("canon_a", "N/A")}
-                        </div>
-                    </div>
-                    <div style="background: #16213e; padding: 0.8rem; border-radius: 8px;">
-                        <div style="color: #43e97b; font-size: 0.75rem; font-weight: 600; margin-bottom: 0.3rem;">
-                            {match["cpse_b"]} — {match["code_b"]}
-                        </div>
-                        <div style="color: #ccc; font-size: 0.85rem;">{match["desc_b"]}</div>
-                        <div style="color: #888; font-size: 0.75rem; margin-top: 0.3rem;">
-                            → {match.get("canon_b", "N/A")}
-                        </div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            cnmc_badge = f'&nbsp;|&nbsp; CNMC: <strong style="color: #43e97b;">{match["cnmc_id"]}</strong>' if match.get("cnmc_id") else ''
+            card_html = (
+                f'<div style="background:#1a1a2e;border-radius:12px;padding:1.2rem;margin-bottom:1rem;border:1px solid #2d2d44;box-shadow:0 4px 16px rgba(0,0,0,0.15);">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">'
+                f'<span class="badge {badge_class}">{match_type}</span>'
+                f'<span style="color:#888;font-size:0.85rem;">Confidence: <strong style="color:white;">{confidence:.1f}%</strong> &nbsp;|&nbsp; Status: <span class="{status_class}"><strong>{status.upper()}</strong></span>{cnmc_badge}</span>'
+                f'</div>'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.8rem;">'
+                f'<div style="background:#16213e;padding:0.8rem;border-radius:8px;">'
+                f'<div style="color:#4facfe;font-size:0.75rem;font-weight:600;margin-bottom:0.3rem;">{match["cpse_a"]} — {match["code_a"]}</div>'
+                f'<div style="color:#ccc;font-size:0.85rem;">{match["desc_a"]}</div>'
+                f'<div style="color:#888;font-size:0.75rem;margin-top:0.3rem;">→ {match.get("canon_a", "N/A")}</div>'
+                f'</div>'
+                f'<div style="background:#16213e;padding:0.8rem;border-radius:8px;">'
+                f'<div style="color:#43e97b;font-size:0.75rem;font-weight:600;margin-bottom:0.3rem;">{match["cpse_b"]} — {match["code_b"]}</div>'
+                f'<div style="color:#ccc;font-size:0.85rem;">{match["desc_b"]}</div>'
+                f'<div style="color:#888;font-size:0.75rem;margin-top:0.3rem;">→ {match.get("canon_b", "N/A")}</div>'
+                f'</div>'
+                f'</div></div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
 
-            # Only render Evidence Details and action buttons for pending matches to prevent UI freezing
+            # Render Evidence Details based on status and user toggles
+            if status == "pending" or (status == "auto-approved" and show_auto_approved_evidence) or (status == "rejected" and show_rejected_evidence):
+                render_evidence_details(match)
+
             if status == "pending":
-                with st.expander(f"📄 Evidence Details — Pair #{match['id']}", expanded=False):
-                    rule_ev = evidence.get("rule_engine", {})
-                    ai_ev = evidence.get("ai_matching", {})
-
-                    col_ev1, col_ev2 = st.columns(2)
-
-                    with col_ev1:
-                        st.markdown("**Rule Engine Results:**")
-                        passed = rule_ev.get("passed", False)
-                        st.markdown(f"- Hard constraints: {'✅ PASSED' if passed else '❌ FAILED'}", unsafe_allow_html=True)
-                        if rule_ev.get("matched_attributes"):
-                            st.markdown(f"- Matched: {', '.join(rule_ev['matched_attributes'])}", unsafe_allow_html=True)
-                        if rule_ev.get("failed_attributes"):
-                            st.markdown(f"- ❌ Differing: **{', '.join(rule_ev['failed_attributes'])}**", unsafe_allow_html=True)
-                        if rule_ev.get("non_critical_diffs"):
-                            st.markdown(f"- ⚠️ Non-critical diffs: {', '.join(rule_ev['non_critical_diffs'])}", unsafe_allow_html=True)
-                        if rule_ev.get("interchangeable_diffs"):
-                            st.markdown(f"- 🔄 Interchangeable diffs: {', '.join(rule_ev['interchangeable_diffs'])}", unsafe_allow_html=True)
-
-                        # Attribute comparison table
-                        attr_details = rule_ev.get("attribute_details", {})
-                        if attr_details:
-                            st.markdown("**Attribute Comparison:**")
-                            for attr, detail in attr_details.items():
-                                icon = "✅" if detail.get("match") else "❌"
-                                st.markdown(f"  {icon} `{attr}`: `{detail.get('item_a', 'N/A')}` vs `{detail.get('item_b', 'N/A')}`", unsafe_allow_html=True)
-
-                    with col_ev2:
-                        st.markdown("**AI Matching Scores:**")
-                        st.markdown(f"- Cosine similarity: `{ai_ev.get('cosine_similarity', 'N/A')}`", unsafe_allow_html=True)
-                        st.markdown(f"- Fuzz ratio: `{ai_ev.get('fuzz_ratio', 'N/A')}`", unsafe_allow_html=True)
-                        st.markdown(f"- Combined score: `{ai_ev.get('combined_score', 'N/A')}`", unsafe_allow_html=True)
-                        st.markdown(f"- Signal: `{evidence.get('signal', 'N/A')}`", unsafe_allow_html=True)
-
                 col_btn1, col_btn2, col_spacer = st.columns([1, 1, 4])
                 with col_btn1:
                     if st.button(f"✅ Approve", key=f"approve_{match['id']}",
@@ -529,6 +532,13 @@ def render_cnmc_crossref():
             if linked:
                 df = pd.DataFrame(linked)
                 st.dataframe(df, use_container_width=True, hide_index=True)
+                
+            # Evidence panels for pairs forming this cluster
+            matches = code_entry.get("matches", [])
+            if matches:
+                st.markdown("<div style='margin-top: 0.5rem; color: #888; font-size: 0.85rem;'>Underlying Mapping Evidence:</div>", unsafe_allow_html=True)
+                for match in matches:
+                    render_evidence_details(match)
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +714,14 @@ def render_inventory_visibility():
                 st.markdown(f"Only {stock_holders[0]} holds stock.")
             else:
                 st.markdown("No CPSE holds stock.")
+                
+            if cpse_stock:
+                total_stock = sum(cpse_stock.values())
+                breakdown = [{"CPSE": cpse, "Quantity On Hand": qty} for cpse, qty in cpse_stock.items()]
+                breakdown.append({"CPSE": "Total", "Quantity On Hand": total_stock})
+                df_stock = pd.DataFrame(breakdown)
+                st.markdown("**Per-CPSE Inventory Breakdown:**")
+                st.dataframe(df_stock, use_container_width=True, hide_index=True)
             
             st.markdown("---")
 

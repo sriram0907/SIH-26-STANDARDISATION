@@ -11,6 +11,7 @@ import csv
 import json
 import logging
 import itertools
+import re
 from backend import database, classifier, extractor, canonical, rule_engine, matcher
 
 logger = logging.getLogger(__name__)
@@ -141,12 +142,24 @@ def run_pipeline(csv_path: str = "data/cpse_variants.csv"):
                 continue  # Skip same-CPSE pairs
 
             # Candidate Blocking / Pre-filter
-            # Must share at least one exact extracted attribute (ignoring Nones)
+            # Must share at least one exact extracted attribute (excluding 'type')
+            # OR share at least one overlapping number in the raw description.
             a_attrs = item_a["attributes"]
             b_attrs = item_b["attributes"]
-            shared = [k for k in a_attrs if a_attrs.get(k) and b_attrs.get(k) and str(a_attrs[k]).upper() == str(b_attrs[k]).upper()]
             
-            if not shared:
+            # Exclude broad categoric attributes from the pre-filter
+            exclude_keys = {"type", "material", "body_material", "end_connection", "thread"}
+            
+            shared_attrs = [
+                k for k in a_attrs 
+                if k not in exclude_keys and a_attrs.get(k) and b_attrs.get(k) 
+                and str(a_attrs[k]).upper() == str(b_attrs[k]).upper()
+            ]
+            
+            nums_a = set(re.findall(r'\d+', item_a["raw_description"]))
+            nums_b = set(re.findall(r'\d+', item_b["raw_description"]))
+            
+            if not shared_attrs and len(nums_a & nums_b) < 2:
                 continue  # Skip obviously unrelated items
 
             pair_count += 1

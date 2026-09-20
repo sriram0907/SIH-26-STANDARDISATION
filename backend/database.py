@@ -228,7 +228,12 @@ def get_next_cnmc_code() -> str:
 
 
 def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "approved") -> str:
-    """Approve a match pair: assign CNMC, update audit log."""
+    """Approve a match pair: assign or merge CNMC, update audit log.
+    
+    Uses union-find logic: if either item already belongs to an existing CNMC,
+    merge into that CNMC. If both items belong to different CNMCs, merge the
+    two CNMCs into one. Only creates a new CNMC if neither item has one yet.
+    """
     conn = get_connection()
 
     # Get the match pair
@@ -237,22 +242,68 @@ def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "appr
         conn.close()
         raise ValueError(f"Match pair {pair_id} not found")
 
-    # Get or create CNMC code
-    cnmc_code = get_next_cnmc_code()
+    item_a_id = pair["item_a_id"]
+    item_b_id = pair["item_b_id"]
 
-    # Get both item IDs
-    item_ids = json.dumps([pair["item_a_id"], pair["item_b_id"]])
+    # Find existing CNMCs that already contain either item
+    all_cnmc_rows = conn.execute("SELECT * FROM cnmc_codes").fetchall()
+    
+    cnmc_for_a = None
+    cnmc_for_b = None
+    for cnmc_row in all_cnmc_rows:
+        member_ids = json.loads(cnmc_row["item_ids"])
+        if item_a_id in member_ids:
+            cnmc_for_a = cnmc_row
+        if item_b_id in member_ids:
+            cnmc_for_b = cnmc_row
 
     # Get canonical description from item A
     item_a = conn.execute("SELECT canonical_description FROM items WHERE id=?",
-                          (pair["item_a_id"],)).fetchone()
+                          (item_a_id,)).fetchone()
     canon_desc = item_a["canonical_description"] if item_a else ""
 
-    # Insert CNMC code
-    conn.execute(
-        "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
-        (cnmc_code, item_ids, canon_desc)
-    )
+    if cnmc_for_a and cnmc_for_b:
+        if cnmc_for_a["cnmc_code"] == cnmc_for_b["cnmc_code"]:
+            # Both already in the same CNMC — just update the match pair
+            cnmc_code = cnmc_for_a["cnmc_code"]
+        else:
+            # Merge: union both CNMCs into one (keep the earlier code)
+            keep = cnmc_for_a
+            discard = cnmc_for_b
+            keep_ids = set(json.loads(keep["item_ids"]))
+            discard_ids = set(json.loads(discard["item_ids"]))
+            merged_ids = sorted(keep_ids | discard_ids)
+            
+            conn.execute("UPDATE cnmc_codes SET item_ids=? WHERE cnmc_code=?",
+                         (json.dumps(merged_ids), keep["cnmc_code"]))
+            # Re-point all match_pairs that referenced the discarded CNMC
+            conn.execute("UPDATE match_pairs SET cnmc_id=? WHERE cnmc_id=?",
+                         (keep["cnmc_code"], discard["cnmc_code"]))
+            conn.execute("DELETE FROM cnmc_codes WHERE cnmc_code=?",
+                         (discard["cnmc_code"],))
+            cnmc_code = keep["cnmc_code"]
+    elif cnmc_for_a:
+        # Add item B into A's existing CNMC
+        existing_ids = set(json.loads(cnmc_for_a["item_ids"]))
+        existing_ids.add(item_b_id)
+        conn.execute("UPDATE cnmc_codes SET item_ids=? WHERE cnmc_code=?",
+                     (json.dumps(sorted(existing_ids)), cnmc_for_a["cnmc_code"]))
+        cnmc_code = cnmc_for_a["cnmc_code"]
+    elif cnmc_for_b:
+        # Add item A into B's existing CNMC
+        existing_ids = set(json.loads(cnmc_for_b["item_ids"]))
+        existing_ids.add(item_a_id)
+        conn.execute("UPDATE cnmc_codes SET item_ids=? WHERE cnmc_code=?",
+                     (json.dumps(sorted(existing_ids)), cnmc_for_b["cnmc_code"]))
+        cnmc_code = cnmc_for_b["cnmc_code"]
+    else:
+        # Neither item has a CNMC yet — create a new one
+        cnmc_code = get_next_cnmc_code()
+        item_ids = json.dumps(sorted([item_a_id, item_b_id]))
+        conn.execute(
+            "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
+            (cnmc_code, item_ids, canon_desc)
+        )
 
     # Update match pair
     conn.execute(
@@ -350,7 +401,7 @@ def get_audit_log() -> list:
 
 
 def get_cnmc_cross_reference() -> list:
-    """Return CNMC cross-reference with linked item details."""
+    """Return CNMC cross-reference with linked item details and underlying matches."""
     conn = get_connection()
     cnmc_rows = conn.execute("SELECT * FROM cnmc_codes ORDER BY id").fetchall()
     result = []
@@ -362,10 +413,15 @@ def get_cnmc_cross_reference() -> list:
                                 (iid,)).fetchone()
             if item:
                 items.append(dict(item))
+                
+        # Fetch the match pairs that formed this CNMC
+        matches = conn.execute("SELECT * FROM match_pairs WHERE cnmc_id=? AND status IN ('approved', 'auto-approved')", (cnmc["cnmc_code"],)).fetchall()
+        
         result.append({
             "cnmc_code": cnmc["cnmc_code"],
             "canonical_description": cnmc["canonical_description"],
             "linked_items": items,
+            "matches": [dict(m) for m in matches],
             "created_at": cnmc["created_at"],
         })
     conn.close()

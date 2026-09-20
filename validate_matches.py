@@ -34,8 +34,10 @@ def main():
                 if local_to_group[a] == local_to_group[b]:
                     actual_positives.add(tuple(sorted([a, b])))
 
-    # 2. Load predicted matches from DB
+    # 2. Load predicted matches and ALL candidates from DB
     predicted_positives = set()
+    all_candidates = set()
+    
     conn = sqlite3.connect("db/harmonize.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -47,10 +49,17 @@ def main():
     for row in cursor.fetchall():
         code_a, code_b, status, match_type = row
         pair = tuple(sorted([code_a, code_b]))
+        all_candidates.add(pair)
+        
         # if pending or auto-approved, it's a positive prediction
         if status in ["pending", "auto-approved"]:
             predicted_positives.add(pair)
     conn.close()
+
+    # Compute Candidate Survival
+    survived_actual_positives = actual_positives.intersection(all_candidates)
+    survival_count = len(survived_actual_positives)
+    total_actual = len(actual_positives)
 
     # 3. Compute metrics
     tp = len(actual_positives.intersection(predicted_positives))
@@ -63,6 +72,7 @@ def main():
     print("\n" + "="*50)
     print("📊 AUTOMATED VALIDATION AGAINST GROUND TRUTH")
     print("="*50)
+    print(f"Candidate Blocking Survival : {survival_count}/{total_actual} true-positive pairs survived")
     print(f"True Positives  (TP) : {tp}")
     print(f"False Positives (FP) : {fp}")
     print(f"False Negatives (FN) : {fn}")
