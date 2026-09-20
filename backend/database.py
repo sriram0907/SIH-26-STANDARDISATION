@@ -426,3 +426,53 @@ def get_cnmc_cross_reference() -> list:
         })
     conn.close()
     return result
+
+
+def search_items(query: str) -> list:
+    """Search items by local_code, raw_description, or standard attribute.
+    
+    Returns matching items enriched with their CNMC membership info.
+    """
+    conn = get_connection()
+    q = f"%{query}%"
+    
+    # Search local_code and raw_description
+    rows = conn.execute("""
+        SELECT * FROM items 
+        WHERE local_code LIKE ? COLLATE NOCASE
+           OR raw_description LIKE ? COLLATE NOCASE
+        ORDER BY id
+    """, (q, q)).fetchall()
+    
+    found_ids = {r["id"] for r in rows}
+    
+    # Also search in JSON attributes for standard field
+    all_items = conn.execute("SELECT * FROM items").fetchall()
+    for item in all_items:
+        if item["id"] in found_ids:
+            continue
+        attrs = json.loads(item["attributes"]) if item["attributes"] else {}
+        # Search standard, diameter, size, pressure_rating
+        for key in ["standard", "diameter", "size", "pressure_rating", "length"]:
+            val = attrs.get(key, "")
+            if val and query.upper() in str(val).upper():
+                found_ids.add(item["id"])
+                rows = list(rows) + [item]
+                break
+    
+    # Build item -> CNMC mapping
+    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes").fetchall()
+    item_to_cnmc = {}
+    for cnmc in cnmc_rows:
+        item_ids = json.loads(cnmc["item_ids"])
+        for iid in item_ids:
+            item_to_cnmc[iid] = cnmc["cnmc_code"]
+    
+    results = []
+    for r in rows:
+        item = dict(r)
+        item["cnmc_code"] = item_to_cnmc.get(item["id"])
+        results.append(item)
+    
+    conn.close()
+    return results

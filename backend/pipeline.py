@@ -142,8 +142,8 @@ def run_pipeline(csv_path: str = "data/cpse_variants.csv"):
                 continue  # Skip same-CPSE pairs
 
             # Candidate Blocking / Pre-filter
-            # Must share at least one exact extracted attribute (excluding 'type')
-            # OR share at least one overlapping number in the raw description.
+            # Must share at least TWO exact extracted specific attributes
+            # OR at least TWO overlapping numbers in the raw description.
             a_attrs = item_a["attributes"]
             b_attrs = item_b["attributes"]
             
@@ -159,7 +159,7 @@ def run_pipeline(csv_path: str = "data/cpse_variants.csv"):
             nums_a = set(re.findall(r'\d+', item_a["raw_description"]))
             nums_b = set(re.findall(r'\d+', item_b["raw_description"]))
             
-            if not shared_attrs and len(nums_a & nums_b) < 2:
+            if len(shared_attrs) < 2 and len(nums_a & nums_b) < 2:
                 continue  # Skip obviously unrelated items
 
             pair_count += 1

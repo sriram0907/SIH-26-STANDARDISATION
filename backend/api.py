@@ -129,6 +129,19 @@ async def get_cnmc_codes():
 
 
 # ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+@app.get("/api/search")
+async def search_materials(q: str = ""):
+    """Search items by local code, description, or standard."""
+    if not q or len(q.strip()) < 2:
+        return {"items": [], "count": 0}
+    items = database.search_items(q.strip())
+    return {"items": items, "count": len(items)}
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 

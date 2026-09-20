@@ -240,7 +240,7 @@ with st.sidebar:
     st.markdown("## ⚙️ Navigation")
     page = st.radio(
         "Select View",
-        ["🏠 Dashboard", "📋 Review Queue", "🔗 CNMC Cross-Reference", 
+        ["🏠 Dashboard", "🔍 Material Search", "📋 Review Queue", "🔗 CNMC Cross-Reference", 
          "📈 Procurement Intelligence", "📦 Inventory Visibility", "🏛️ Legacy Code Manager",
          "📊 Processed Items", "📜 Audit Log"],
         label_visibility="collapsed",
@@ -507,38 +507,122 @@ def render_cnmc_crossref():
         st.markdown("<br>", unsafe_allow_html=True)
 
     for code_entry in data["codes"]:
-        cnmc = code_entry["cnmc_code"]
-        canon = code_entry.get("canonical_description", "")
-        linked = code_entry.get("linked_items", [])
-        total_qty = sum(item.get("quantity_on_hand", 0) for item in linked)
+        render_cnmc_card(code_entry)
 
-        with st.container():
-            st.markdown(f"""
-            <div style="background: #1a1a2e; border-radius: 12px; padding: 1.2rem;
-                        margin-bottom: 1rem; border-left: 4px solid #43e97b;
-                        border-right: 1px solid #2d2d44; border-top: 1px solid #2d2d44;
-                        border-bottom: 1px solid #2d2d44;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="color: #43e97b; font-weight: 700; font-size: 1.1rem;">{cnmc}</span>
-                    <span style="color: #888; font-size: 0.85rem;">Total Known Units: <strong style="color: white;">{total_qty}</strong> | {code_entry.get('created_at', '')}</span>
-                </div>
-                <div style="color: #ccc; margin-top: 0.5rem; font-size: 0.9rem;">
-                    📝 {canon}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
 
-            # Linked items
-            if linked:
-                df = pd.DataFrame(linked)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                
-            # Evidence panels for pairs forming this cluster
-            matches = code_entry.get("matches", [])
-            if matches:
-                st.markdown("<div style='margin-top: 0.5rem; color: #888; font-size: 0.85rem;'>Underlying Mapping Evidence:</div>", unsafe_allow_html=True)
-                for match in matches:
-                    render_evidence_details(match)
+# ---------------------------------------------------------------------------
+# Shared Component: CNMC Card
+# ---------------------------------------------------------------------------
+
+def render_cnmc_card(code_entry):
+    """Render a single CNMC cross-reference card with linked items and evidence."""
+    cnmc = code_entry["cnmc_code"]
+    canon = code_entry.get("canonical_description", "")
+    linked = code_entry.get("linked_items", [])
+    total_qty = sum(item.get("quantity_on_hand", 0) for item in linked)
+
+    with st.container():
+        card_html = (
+            f'<div style="background:#1a1a2e;border-radius:12px;padding:1.2rem;margin-bottom:1rem;border-left:4px solid #43e97b;border-right:1px solid #2d2d44;border-top:1px solid #2d2d44;border-bottom:1px solid #2d2d44;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<span style="color:#43e97b;font-weight:700;font-size:1.1rem;">{cnmc}</span>'
+            f'<span style="color:#888;font-size:0.85rem;">Total Known Units: <strong style="color:white;">{total_qty}</strong> | {code_entry.get("created_at", "")}</span>'
+            f'</div>'
+            f'<div style="color:#ccc;margin-top:0.5rem;font-size:0.9rem;">📝 {canon}</div>'
+            f'</div>'
+        )
+        st.markdown(card_html, unsafe_allow_html=True)
+
+        # Linked items
+        if linked:
+            df = pd.DataFrame(linked)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+        # Evidence panels for pairs forming this cluster
+        matches = code_entry.get("matches", [])
+        if matches:
+            st.markdown("<div style='margin-top: 0.5rem; color: #888; font-size: 0.85rem;'>Underlying Mapping Evidence:</div>", unsafe_allow_html=True)
+            for match in matches:
+                render_evidence_details(match)
+
+
+# ---------------------------------------------------------------------------
+# Page: Material Search
+# ---------------------------------------------------------------------------
+
+def render_material_search():
+    """Render the Material Search page."""
+    render_header()
+    st.markdown("### 🔍 Material Search")
+    st.markdown("Search by CPSE local code, raw description, or standard code (e.g. `CPSE-A-BLT-1000`, `hex bolt 316`, `DIN 933`).")
+
+    query = st.text_input("🔎 Search materials", placeholder="Type a code, description, or standard...")
+
+    if not query or len(query.strip()) < 2:
+        st.info("Enter at least 2 characters to search.")
+        return
+
+    # Fetch search results
+    data = api_get(f"/api/search?q={query}")
+    if not data or not data.get("items"):
+        st.warning(f"No material found matching '{query}'")
+        return
+
+    items = data["items"]
+    st.markdown(f"**{len(items)} item(s) match your search**")
+
+    # Group matching items by their CNMC code
+    cnmc_groups = {}  # cnmc_code -> list of items
+    unassigned = []
+    for item in items:
+        cnmc = item.get("cnmc_code")
+        if cnmc:
+            if cnmc not in cnmc_groups:
+                cnmc_groups[cnmc] = []
+            cnmc_groups[cnmc].append(item)
+        else:
+            unassigned.append(item)
+
+    # If only a few CNMCs, show full detail directly
+    if len(cnmc_groups) <= 3:
+        # Show full CNMC cards
+        for cnmc_code in cnmc_groups:
+            cnmc_data = _fetch_cnmc_detail(cnmc_code)
+            if cnmc_data:
+                render_cnmc_card(cnmc_data)
+    else:
+        # Show summary list with expandable detail
+        st.markdown(f"**Matches span {len(cnmc_groups)} CNMC groups** — click to expand details:")
+        for cnmc_code, group_items in cnmc_groups.items():
+            cnmc_data = _fetch_cnmc_detail(cnmc_code)
+            canon = cnmc_data["canonical_description"] if cnmc_data else "N/A"
+            item_count = len(cnmc_data["linked_items"]) if cnmc_data else len(group_items)
+            with st.expander(f"📦 {cnmc_code} — {canon} ({item_count} items)"):
+                if cnmc_data:
+                    render_cnmc_card(cnmc_data)
+                else:
+                    for item in group_items:
+                        st.markdown(f"- `{item['local_code']}`: {item['raw_description']}")
+
+    # Show unassigned items (not in any CNMC)
+    if unassigned:
+        st.markdown("---")
+        st.markdown(f"**{len(unassigned)} matching item(s) not yet assigned to a CNMC:**")
+        for item in unassigned:
+            raw = item['raw_description']
+            code = item['local_code']
+            st.markdown(f"- `{code}` ({item['cpse_id']}): {raw}")
+
+
+def _fetch_cnmc_detail(cnmc_code: str):
+    """Fetch full CNMC detail from the API for a specific code."""
+    data = api_get("/api/cnmc-codes")
+    if not data or not data.get("codes"):
+        return None
+    for code_entry in data["codes"]:
+        if code_entry["cnmc_code"] == cnmc_code:
+            return code_entry
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -788,6 +872,8 @@ def render_legacy_code_manager():
 
 if "🏠 Dashboard" in page:
     render_dashboard()
+elif "🔍 Material Search" in page:
+    render_material_search()
 elif "📋 Review Queue" in page:
     render_review_queue()
 elif "🔗 CNMC Cross-Reference" in page:
