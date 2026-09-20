@@ -327,6 +327,82 @@ def generate_dataset(output_dir: str = "data"):
     logger.info(f"✅ Generated {len(ground_truth_rows)} ground truth entries -> {ground_truth_path}")
     logger.info(f"   Including {len(NEAR_MISS_TRAPS)} near-miss traps")
 
+    # --- Generate procurement requests (active demand for a subset of items) ---
+    procurement_path = os.path.join(output_dir, "procurement_requests.csv")
+
+    MOCK_SUPPLIERS = [
+        "Tata Steel Ltd", "Bharat Heavy Electricals Ltd", "Jindal Steel & Power",
+        "Larsen & Toubro", "Steel Authority of India", "Misumi India",
+        "RS Components India", "Hilti India", "Bossard India", "Würth India",
+    ]
+
+    procurement_rows = []
+
+    # Random procurement requests for ~35% of items
+    for row in variants_rows:
+        if random.random() < 0.35:
+            procurement_rows.append({
+                "cpse_id": row["cpse_id"],
+                "local_code": row["local_code"],
+                "quantity_needed": random.randint(10, 300),
+                "supplier": random.choice(MOCK_SUPPLIERS),
+                "request_date": f"2026-{random.randint(7, 9):02d}-{random.randint(1, 28):02d}",
+            })
+
+    # -------------------------------------------------------------------------
+    # SEEDED SCENARIOS — guarantee demo shows stock-reuse + consolidation
+    # -------------------------------------------------------------------------
+    # Build lookup: canonical_id -> list of (cpse_id, local_code)
+    canon_to_variants = {}
+    for gt in ground_truth_rows:
+        canon_to_variants.setdefault(gt["canonical_id"], []).append(
+            (gt["cpse_id"], gt["local_code"])
+        )
+    
+    # Also build lookup for existing procurement local_codes to avoid duplicates
+    existing_procurement_codes = {r["local_code"] for r in procurement_rows}
+
+    # --- Stock-reuse scenarios ---
+    # BOLT-001: force CPSE-A to need it, CPSE-B already has stock (from quantity_on_hand)
+    # VALVE-002: force CPSE-C to need it, CPSE-A already has stock
+    for canon_id, needer_cpse in [("BOLT-001", "CPSE-A"), ("VALVE-002", "CPSE-C")]:
+        variants = canon_to_variants.get(canon_id, [])
+        for cpse, code in variants:
+            if cpse == needer_cpse and code not in existing_procurement_codes:
+                procurement_rows.append({
+                    "cpse_id": cpse,
+                    "local_code": code,
+                    "quantity_needed": random.randint(100, 250),
+                    "supplier": random.choice(MOCK_SUPPLIERS),
+                    "request_date": "2026-09-15",
+                })
+                existing_procurement_codes.add(code)
+                logger.info(f"  🎯 SEEDED stock-reuse scenario: {cpse} needs {canon_id} ({code})")
+
+    # --- Consolidation scenarios ---
+    # BOLT-003: force both CPSE-A and CPSE-C to need it
+    # VALVE-004: force both CPSE-B and CPSE-C to need it
+    for canon_id, needer_cpses in [("BOLT-003", ["CPSE-A", "CPSE-C"]), ("VALVE-004", ["CPSE-B", "CPSE-C"])]:
+        variants = canon_to_variants.get(canon_id, [])
+        for cpse, code in variants:
+            if cpse in needer_cpses and code not in existing_procurement_codes:
+                procurement_rows.append({
+                    "cpse_id": cpse,
+                    "local_code": code,
+                    "quantity_needed": random.randint(80, 200),
+                    "supplier": random.choice(MOCK_SUPPLIERS),
+                    "request_date": "2026-09-18",
+                })
+                existing_procurement_codes.add(code)
+                logger.info(f"  🎯 SEEDED consolidation scenario: {cpse} needs {canon_id} ({code})")
+
+    with open(procurement_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["cpse_id", "local_code", "quantity_needed", "supplier", "request_date"])
+        writer.writeheader()
+        writer.writerows(procurement_rows)
+
+    logger.info(f"✅ Generated {len(procurement_rows)} procurement requests -> {procurement_path}")
+
     return variants_path, ground_truth_path
 
 

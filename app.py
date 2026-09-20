@@ -391,8 +391,8 @@ def render_review_queue():
             index=0,
         )
     with col_filter2:
-        show_auto_approved_evidence = st.checkbox("Show Auto-Approved evidence", value=False)
-        show_rejected_evidence = st.checkbox("Show Rejected/No-Match evidence", value=False)
+        show_auto_approved = st.checkbox("Show Auto-Approved", value=True)
+        show_rejected = st.checkbox("Show Rejected", value=True)
 
     # Fetch matches
     if status_filter == "all":
@@ -411,7 +411,12 @@ def render_review_queue():
         match_type = match["match_type"]
         confidence = match["confidence"]
         status = match["status"]
-        evidence = json.loads(match["evidence"]) if isinstance(match["evidence"], str) else match["evidence"]
+
+        # Skip rendering based on toggle state
+        if status in ("auto-approved", "Auto-Approved") and not show_auto_approved:
+            continue
+        if status == "rejected" and not show_rejected:
+            continue
 
         badge_class = get_badge_class(match_type)
         status_class = f"status-{status}"
@@ -440,9 +445,38 @@ def render_review_queue():
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-            # Render Evidence Details based on status and user toggles
-            if status == "pending" or (status == "auto-approved" and show_auto_approved_evidence) or (status == "rejected" and show_rejected_evidence):
+            # Evidence rendering: pending shows directly, others use lazy load
+            if status == "pending":
                 render_evidence_details(match)
+            elif status in ("auto-approved", "Auto-Approved", "rejected"):
+                evidence_key = f"evidence_loaded_{match['id']}"
+                with st.expander(f"📄 Evidence Details — Pair #{match['id']}", expanded=False):
+                    if st.button("Load Evidence", key=f"load_ev_{match['id']}"):
+                        st.session_state[evidence_key] = True
+                    if st.session_state.get(evidence_key):
+                        evidence = match.get("evidence", {})
+                        if isinstance(evidence, str):
+                            try:
+                                evidence = json.loads(evidence)
+                            except json.JSONDecodeError:
+                                evidence = {}
+                        rule_ev = evidence.get("rule_engine", {})
+                        ai_ev = evidence.get("ai_matching", {})
+                        col_ev1, col_ev2 = st.columns(2)
+                        with col_ev1:
+                            st.markdown("**Rule Engine Results:**")
+                            passed = rule_ev.get("passed", False)
+                            st.markdown(f"- Hard constraints: {'✅ PASSED' if passed else '❌ FAILED'}")
+                            if rule_ev.get("matched_attributes"):
+                                st.markdown(f"- Matched: {', '.join(rule_ev['matched_attributes'])}")
+                            if rule_ev.get("failed_attributes"):
+                                st.markdown(f"- ❌ Differing: **{', '.join(rule_ev['failed_attributes'])}**")
+                        with col_ev2:
+                            st.markdown("**AI Matching Scores:**")
+                            st.markdown(f"- Cosine similarity: `{ai_ev.get('cosine_similarity', 'N/A')}`")
+                            st.markdown(f"- Fuzz ratio: `{ai_ev.get('fuzz_ratio', 'N/A')}`")
+                            st.markdown(f"- Combined score: `{ai_ev.get('combined_score', 'N/A')}`")
+                            st.markdown(f"- Signal: `{evidence.get('signal', 'N/A')}`")
 
             if status == "pending":
                 col_btn1, col_btn2, col_spacer = st.columns([1, 1, 4])
@@ -554,9 +588,9 @@ def render_material_search():
     """Render the Material Search page."""
     render_header()
     st.markdown("### 🔍 Material Search")
-    st.markdown("Search by CPSE local code, raw description, or standard code (e.g. `CPSE-A-BLT-1000`, `hex bolt 316`, `DIN 933`).")
+    st.markdown("Search by CPSE local code, raw description, standard code, or **CNMC code** (e.g. `CPSE-A-BLT-1000`, `hex bolt 316`, `DIN 933`, `CNMC-000001`).")
 
-    query = st.text_input("🔎 Search materials", placeholder="Type a code, description, or standard...")
+    query = st.text_input("🔎 Search materials", placeholder="Type a code, description, standard, or CNMC code...")
 
     if not query or len(query.strip()) < 2:
         st.info("Enter at least 2 characters to search.")
@@ -702,29 +736,66 @@ def render_audit_log():
 def render_procurement_intelligence():
     render_header()
     st.markdown("### 📈 Procurement Intelligence")
-    st.markdown("Aggregate total demand/stock by CNMC across CPSEs.")
+    st.markdown("Active procurement demand analysis per CNMC — identifies stock reuse and consolidation opportunities across CPSEs.")
     
-    data = api_get("/api/cnmc-codes")
-    if not data or not data.get("codes"):
-        st.info("No CNMC codes assigned yet. Approve matches first.")
+    data = api_get("/api/procurement-intelligence")
+    if not data or not data.get("cnmc_groups"):
+        st.info("No procurement intelligence data available. Run the pipeline first.")
         return
-        
-    for code_entry in data["codes"]:
-        cnmc = code_entry["cnmc_code"]
-        canon = code_entry.get("canonical_description", "")
-        linked = code_entry.get("linked_items", [])
-        
-        # Aggregate demand/stock by CPSE
-        cpse_stock = {}
-        for item in linked:
-            cpse = item["cpse_id"]
-            cpse_stock[cpse] = cpse_stock.get(cpse, 0) + item.get("quantity_on_hand", 0)
-            
-        total_stock = sum(cpse_stock.values())
-        is_opportunity = len(cpse_stock) > 1
-        
+
+    groups = data["cnmc_groups"]
+
+    # Summary metrics
+    total_requisitions = sum(len(g["demand_items"]) for g in groups)
+    total_demand_units = sum(g["total_demand"] for g in groups)
+    reuse_count = sum(1 for g in groups if g.get("stock_reuse_suggestions"))
+    consol_count = sum(1 for g in groups if g.get("consolidation_opportunity"))
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card blue">
+            <div class="metric-label">Active Requisitions</div>
+            <div class="metric-value">{total_requisitions}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card orange">
+            <div class="metric-label">Total Demand (Units)</div>
+            <div class="metric-value">{total_demand_units:,}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown(f"""
+        <div class="metric-card green">
+            <div class="metric-label">Stock Reuse Opportunities</div>
+            <div class="metric-value">{reuse_count}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col4:
+        st.markdown(f"""
+        <div class="metric-card purple">
+            <div class="metric-label">Consolidation Opportunities</div>
+            <div class="metric-value">{consol_count}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Per-CNMC cards
+    for group in groups:
+        cnmc = group["cnmc_code"]
+        canon = group.get("canonical_description", "")
+        demand_items = group.get("demand_items", [])
+        stock_items = group.get("stock_items", [])
+        reuse_suggestions = group.get("stock_reuse_suggestions", [])
+        consolidation = group.get("consolidation_opportunity")
+
+        has_opportunity = bool(reuse_suggestions or consolidation)
+        border_color = "#ffa751" if has_opportunity else "#4facfe"
+
         with st.container():
-            border_color = "#ffa751" if is_opportunity else "#2d2d44"
             st.markdown(f"""
             <div style="background: #1a1a2e; border-radius: 12px; padding: 1.2rem;
                         margin-bottom: 1rem; border-left: 4px solid {border_color};
@@ -732,22 +803,49 @@ def render_procurement_intelligence():
                         border-bottom: 1px solid #2d2d44;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span style="color: {border_color}; font-weight: 700; font-size: 1.1rem;">{cnmc}</span>
-                    <span style="color: #888; font-size: 0.85rem;">Total Known Units: <strong style="color: white;">{total_stock}</strong></span>
+                    <span style="color: #888; font-size: 0.85rem;">Demand: <strong style="color: #ffa751;">{group['total_demand']:,} units</strong> &nbsp;|&nbsp; Stock: <strong style="color: #43e97b;">{group['total_stock']:,} units</strong></span>
                 </div>
-                <div style="color: #ccc; margin-top: 0.5rem; font-size: 0.9rem;">
-                    📝 {canon}
-                </div>
+                <div style="color: #ccc; margin-top: 0.5rem; font-size: 0.9rem;">📝 {canon}</div>
             </div>
             """, unsafe_allow_html=True)
-            
-            if is_opportunity:
-                st.warning("🚀 **Consolidated Procurement Opportunity:** Multiple CPSEs use this material. Consider bulk negotiation.")
-                
-            if cpse_stock:
-                # Display simple breakdown
-                st.markdown("**CPSE Breakdown:**")
-                breakdown_str = " + ".join([f"{cpse} ({qty})" for cpse, qty in cpse_stock.items()])
-                st.markdown(f"↳ {cnmc}: {breakdown_str} = {total_stock} total")
+
+            # Opportunity banners
+            for suggestion in reuse_suggestions:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #3d2800 0%, #2d1f00 100%); border: 1px solid #ffa75155;
+                            border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.5rem; color: #ffa751; font-size: 0.9rem;">
+                    🔄 <strong>Stock Reuse:</strong> {suggestion}
+                </div>
+                """, unsafe_allow_html=True)
+
+            if consolidation:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #0a1628 0%, #162040 100%); border: 1px solid #4facfe55;
+                            border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.5rem; color: #4facfe; font-size: 0.9rem;">
+                    🚀 <strong>Consolidation:</strong> {consolidation}
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Demand and Stock tables side by side
+            col_demand, col_stock = st.columns(2)
+            with col_demand:
+                st.markdown("**📋 Active Demand:**")
+                if demand_items:
+                    df_demand = pd.DataFrame(demand_items)
+                    df_demand.columns = [c.replace("_", " ").title() for c in df_demand.columns]
+                    st.dataframe(df_demand, use_container_width=True, hide_index=True)
+                else:
+                    st.markdown("<span style='color:#888;'>No active demand</span>", unsafe_allow_html=True)
+
+            with col_stock:
+                st.markdown("**📦 Existing Stock:**")
+                if stock_items:
+                    df_stock = pd.DataFrame(stock_items)
+                    df_stock.columns = [c.replace("_", " ").title() for c in df_stock.columns]
+                    st.dataframe(df_stock, use_container_width=True, hide_index=True)
+                else:
+                    st.markdown("<span style='color:#888;'>No stock held</span>", unsafe_allow_html=True)
+
             st.markdown("---")
 
 # ---------------------------------------------------------------------------

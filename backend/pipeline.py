@@ -112,6 +112,40 @@ def run_pipeline(csv_path: str = "data/cpse_variants.csv"):
         logger.info(f"  Classification path '{path}': {count} items")
 
     # -----------------------------------------------------------------------
+    # PHASE 1b: Load procurement requests
+    # -----------------------------------------------------------------------
+    import os
+    procurement_csv = os.path.join(os.path.dirname(csv_path), "procurement_requests.csv")
+    if os.path.exists(procurement_csv):
+        logger.info(f"\n{'━' * 70}")
+        logger.info("PHASE 1b: Loading Procurement Requests")
+        logger.info("━" * 70)
+
+        # Build local_code -> item_id mapping
+        code_to_id = {item["local_code"]: item["id"] for item in processed_items}
+
+        proc_items = load_csv_items(procurement_csv)
+        loaded_count = 0
+        for pr in proc_items:
+            item_id = code_to_id.get(pr["local_code"])
+            if item_id:
+                database.insert_procurement_request(
+                    item_id=item_id,
+                    cpse_id=pr["cpse_id"],
+                    local_code=pr["local_code"],
+                    quantity_needed=int(pr["quantity_needed"]),
+                    supplier=pr.get("supplier"),
+                    request_date=pr.get("request_date"),
+                )
+                loaded_count += 1
+            else:
+                logger.warning(f"  ⚠️ Procurement request for unknown code: {pr['local_code']}")
+
+        logger.info(f"  ✅ Loaded {loaded_count} procurement requests into database")
+    else:
+        logger.info(f"  ℹ️ No procurement_requests.csv found at {procurement_csv}, skipping")
+
+    # -----------------------------------------------------------------------
     # PHASE 2: Generate cross-CPSE pairs and match
     # -----------------------------------------------------------------------
     logger.info(f"\n{'━' * 70}")

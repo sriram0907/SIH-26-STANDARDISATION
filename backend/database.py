@@ -75,6 +75,17 @@ def init_db():
             match_pair_id INTEGER DEFAULT NULL,
             created_at  TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS procurement_requests (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id         INTEGER REFERENCES items(id),
+            cpse_id         TEXT NOT NULL,
+            local_code      TEXT NOT NULL,
+            quantity_needed INTEGER NOT NULL,
+            supplier        TEXT DEFAULT NULL,
+            request_date    TEXT DEFAULT NULL,
+            created_at      TEXT DEFAULT (datetime('now'))
+        );
     """)
 
     conn.commit()
@@ -87,6 +98,7 @@ def reset_db():
     conn = get_connection()
     cursor = conn.cursor()
     cursor.executescript("""
+        DROP TABLE IF EXISTS procurement_requests;
         DROP TABLE IF EXISTS audit_log;
         DROP TABLE IF EXISTS cnmc_codes;
         DROP TABLE IF EXISTS match_pairs;
@@ -428,13 +440,153 @@ def get_cnmc_cross_reference() -> list:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Procurement Requests
+# ---------------------------------------------------------------------------
+
+def insert_procurement_request(item_id: int, cpse_id: str, local_code: str,
+                                quantity_needed: int, supplier: str = None,
+                                request_date: str = None):
+    """Insert a procurement request row."""
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO procurement_requests
+           (item_id, cpse_id, local_code, quantity_needed, supplier, request_date)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (item_id, cpse_id, local_code, quantity_needed, supplier, request_date)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_procurement_intelligence() -> list:
+    """Build procurement intelligence per CNMC group.
+
+    For each CNMC, returns:
+    - demand_items: CPSEs with active procurement requests
+    - stock_items: CPSEs holding existing stock
+    - stock_reuse_suggestions: messages when one CPSE needs and another holds
+    - consolidation_opportunity: message when 2+ CPSEs have active demand
+    """
+    conn = get_connection()
+    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes ORDER BY id").fetchall()
+    proc_rows = conn.execute("SELECT * FROM procurement_requests").fetchall()
+
+    # Build item_id -> procurement requests mapping
+    item_procurement = {}  # item_id -> list of procurement rows
+    for pr in proc_rows:
+        item_procurement.setdefault(pr["item_id"], []).append(dict(pr))
+
+    result = []
+    for cnmc in cnmc_rows:
+        item_ids = json.loads(cnmc["item_ids"])
+        demand_items = []
+        stock_items = []
+
+        for iid in item_ids:
+            item = conn.execute(
+                "SELECT id, cpse_id, local_code, raw_description, quantity_on_hand FROM items WHERE id=?",
+                (iid,)
+            ).fetchone()
+            if not item:
+                continue
+
+            item_dict = dict(item)
+
+            # Check if this item has procurement requests
+            procs = item_procurement.get(iid, [])
+            if procs:
+                for pr in procs:
+                    demand_items.append({
+                        "cpse_id": item_dict["cpse_id"],
+                        "local_code": item_dict["local_code"],
+                        "quantity_needed": pr["quantity_needed"],
+                        "supplier": pr.get("supplier"),
+                        "request_date": pr.get("request_date"),
+                    })
+
+            # Stock is always reported from quantity_on_hand
+            if item_dict.get("quantity_on_hand", 0) > 0:
+                stock_items.append({
+                    "cpse_id": item_dict["cpse_id"],
+                    "local_code": item_dict["local_code"],
+                    "quantity_on_hand": item_dict["quantity_on_hand"],
+                })
+
+        total_demand = sum(d["quantity_needed"] for d in demand_items)
+        total_stock = sum(s["quantity_on_hand"] for s in stock_items)
+
+        # --- Stock-reuse suggestions ---
+        stock_reuse_suggestions = []
+        demand_cpses = {d["cpse_id"] for d in demand_items}
+        stock_by_cpse = {}
+        for s in stock_items:
+            stock_by_cpse.setdefault(s["cpse_id"], 0)
+            stock_by_cpse[s["cpse_id"]] += s["quantity_on_hand"]
+
+        for d in demand_items:
+            for s_cpse, s_qty in stock_by_cpse.items():
+                if s_cpse != d["cpse_id"] and s_qty > 0:
+                    stock_reuse_suggestions.append(
+                        f"{d['cpse_id']} needs {d['quantity_needed']} units — "
+                        f"{s_cpse} already holds {s_qty} units of this material, "
+                        f"consider internal transfer before new purchase"
+                    )
+
+        # Deduplicate suggestions (same CPSE pair may appear multiple times)
+        stock_reuse_suggestions = list(dict.fromkeys(stock_reuse_suggestions))
+
+        # --- Consolidation opportunity ---
+        consolidation_opportunity = None
+        if len(demand_cpses) >= 2:
+            consolidation_opportunity = (
+                f"Consolidated procurement opportunity: {total_demand} total units "
+                f"needed across {len(demand_cpses)} CPSEs — consider bulk purchase/negotiation"
+            )
+
+        # Only include CNMC groups that have at least some demand or are interesting
+        if demand_items or stock_reuse_suggestions or consolidation_opportunity:
+            result.append({
+                "cnmc_code": cnmc["cnmc_code"],
+                "canonical_description": cnmc["canonical_description"],
+                "demand_items": demand_items,
+                "stock_items": stock_items,
+                "total_demand": total_demand,
+                "total_stock": total_stock,
+                "stock_reuse_suggestions": stock_reuse_suggestions,
+                "consolidation_opportunity": consolidation_opportunity,
+            })
+
+    conn.close()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
 def search_items(query: str) -> list:
-    """Search items by local_code, raw_description, or standard attribute.
+    """Search items by local_code, raw_description, standard attribute, or CNMC code.
     
     Returns matching items enriched with their CNMC membership info.
     """
     conn = get_connection()
     q = f"%{query}%"
+    
+    # Build item -> CNMC mapping (needed for both CNMC search and enrichment)
+    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes").fetchall()
+    item_to_cnmc = {}
+    for cnmc in cnmc_rows:
+        item_ids = json.loads(cnmc["item_ids"])
+        for iid in item_ids:
+            item_to_cnmc[iid] = cnmc["cnmc_code"]
+
+    # Check if the query matches a CNMC code directly
+    cnmc_matched_ids = set()
+    for cnmc in cnmc_rows:
+        if query.upper() in cnmc["cnmc_code"].upper():
+            member_ids = json.loads(cnmc["item_ids"])
+            cnmc_matched_ids.update(member_ids)
     
     # Search local_code and raw_description
     rows = conn.execute("""
@@ -445,6 +597,14 @@ def search_items(query: str) -> list:
     """, (q, q)).fetchall()
     
     found_ids = {r["id"] for r in rows}
+    
+    # Add CNMC-matched items that weren't found by text search
+    for iid in cnmc_matched_ids:
+        if iid not in found_ids:
+            item = conn.execute("SELECT * FROM items WHERE id=?", (iid,)).fetchone()
+            if item:
+                rows = list(rows) + [item]
+                found_ids.add(iid)
     
     # Also search in JSON attributes for standard field
     all_items = conn.execute("SELECT * FROM items").fetchall()
@@ -459,14 +619,6 @@ def search_items(query: str) -> list:
                 found_ids.add(item["id"])
                 rows = list(rows) + [item]
                 break
-    
-    # Build item -> CNMC mapping
-    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes").fetchall()
-    item_to_cnmc = {}
-    for cnmc in cnmc_rows:
-        item_ids = json.loads(cnmc["item_ids"])
-        for iid in item_ids:
-            item_to_cnmc[iid] = cnmc["cnmc_code"]
     
     results = []
     for r in rows:
