@@ -128,6 +128,13 @@ async def get_cnmc_codes():
     return {"codes": codes, "count": len(codes)}
 
 
+@app.get("/api/procurement-intelligence")
+async def get_procurement_intelligence():
+    """Get procurement intelligence data per CNMC group."""
+    data = database.get_procurement_intelligence()
+    return {"cnmc_groups": data, "count": len(data)}
+
+
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
