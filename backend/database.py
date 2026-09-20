@@ -12,7 +12,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "db", "harmonize.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "db", "harmonize.db")
 
 
 def get_connection() -> sqlite3.Connection:

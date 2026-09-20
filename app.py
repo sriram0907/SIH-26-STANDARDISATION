@@ -128,7 +128,6 @@ st.markdown("""
     /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -137,7 +136,6 @@ st.markdown("""
 # Helper functions
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=60)
 def api_get(endpoint: str):
     """Make a GET request to the API."""
     try:
