@@ -73,7 +73,7 @@ def init_db():
             signal      TEXT DEFAULT NULL,
             details     TEXT DEFAULT NULL,
             match_pair_id INTEGER DEFAULT NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now', 'localtime'))
         );
 
         CREATE TABLE IF NOT EXISTS procurement_requests (
@@ -192,8 +192,20 @@ def insert_match_pair(item_a_id: int, item_b_id: int, match_type: str,
 def get_pending_reviews() -> list:
     """Get all pending match pairs with item details."""
     conn = get_connection()
+    
+    # First, get a mapping of item_id -> cnmc_code
+    cnmc_rows = conn.execute("SELECT cnmc_code, item_ids FROM cnmc_codes").fetchall()
+    item_to_cnmc = {}
+    for r in cnmc_rows:
+        try:
+            for item_id in json.loads(r["item_ids"]):
+                item_to_cnmc[item_id] = r["cnmc_code"]
+        except json.JSONDecodeError:
+            pass
+
     rows = conn.execute("""
         SELECT mp.id, mp.match_type, mp.confidence, mp.evidence, mp.status, mp.cnmc_id,
+               mp.item_a_id, mp.item_b_id,
                a.cpse_id as cpse_a, a.local_code as code_a, a.raw_description as desc_a,
                a.canonical_description as canon_a, a.attributes as attrs_a,
                b.cpse_id as cpse_b, b.local_code as code_b, b.raw_description as desc_b,
@@ -204,14 +216,31 @@ def get_pending_reviews() -> list:
         ORDER BY mp.confidence DESC
     """).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    
+    results = [dict(r) for r in rows]
+    for res in results:
+        res["cnmc_a"] = item_to_cnmc.get(res["item_a_id"])
+        res["cnmc_b"] = item_to_cnmc.get(res["item_b_id"])
+    return results
 
 
 def get_matches_by_status(status: str) -> list:
     """Get match pairs filtered by status."""
     conn = get_connection()
+    
+    # First, get a mapping of item_id -> cnmc_code
+    cnmc_rows = conn.execute("SELECT cnmc_code, item_ids FROM cnmc_codes").fetchall()
+    item_to_cnmc = {}
+    for r in cnmc_rows:
+        try:
+            for item_id in json.loads(r["item_ids"]):
+                item_to_cnmc[item_id] = r["cnmc_code"]
+        except json.JSONDecodeError:
+            pass
+
     rows = conn.execute("""
         SELECT mp.id, mp.match_type, mp.confidence, mp.evidence, mp.status, mp.cnmc_id,
+               mp.item_a_id, mp.item_b_id,
                a.cpse_id as cpse_a, a.local_code as code_a, a.raw_description as desc_a,
                a.canonical_description as canon_a,
                b.cpse_id as cpse_b, b.local_code as code_b, b.raw_description as desc_b,
@@ -223,7 +252,12 @@ def get_matches_by_status(status: str) -> list:
         ORDER BY mp.confidence DESC
     """, (status, status)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    
+    results = [dict(r) for r in rows]
+    for res in results:
+        res["cnmc_a"] = item_to_cnmc.get(res["item_a_id"])
+        res["cnmc_b"] = item_to_cnmc.get(res["item_b_id"])
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +357,13 @@ def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "appr
         (status, cnmc_code, pair_id)
     )
 
-    # Audit log
+    # Audit log — use Python datetime.now() so the timestamp reflects
+    # the actual local wall-clock time, not UTC (SQLite's datetime('now') default).
     conn.execute(
-        """INSERT INTO audit_log (action, reviewer, signal, details, match_pair_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        ("approved", reviewer, "human", json.dumps({"cnmc_code": cnmc_code}), pair_id)
+        """INSERT INTO audit_log (action, reviewer, signal, details, match_pair_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("approved", reviewer, "human", json.dumps({"cnmc_code": cnmc_code}), pair_id,
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
 
     conn.commit()
@@ -337,21 +373,67 @@ def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "appr
     return cnmc_code
 
 
-def reject_match(pair_id: int, reviewer: str = "demo_user"):
-    """Reject a match pair, log the decision."""
+def reject_match(pair_id: int, reviewer: str = "demo_user") -> dict:
+    """Reject a match pair, assign individual CNMCs if missing, and log the decision."""
     conn = get_connection()
+
+    pair = conn.execute("SELECT * FROM match_pairs WHERE id=?", (pair_id,)).fetchone()
+    if not pair:
+        conn.close()
+        raise ValueError(f"Match pair {pair_id} not found")
+
+    item_a_id = pair["item_a_id"]
+    item_b_id = pair["item_b_id"]
+
+    # Check for existing CNMCs
+    all_cnmc_rows = conn.execute("SELECT * FROM cnmc_codes").fetchall()
+    cnmc_for_a = None
+    cnmc_for_b = None
+    for cnmc_row in all_cnmc_rows:
+        member_ids = json.loads(cnmc_row["item_ids"])
+        if item_a_id in member_ids:
+            cnmc_for_a = cnmc_row["cnmc_code"]
+        if item_b_id in member_ids:
+            cnmc_for_b = cnmc_row["cnmc_code"]
+
+    if not cnmc_for_a:
+        item_a = conn.execute("SELECT canonical_description FROM items WHERE id=?", (item_a_id,)).fetchone()
+        canon_desc_a = item_a["canonical_description"] if item_a else ""
+        cnmc_for_a = get_next_cnmc_code()
+        conn.execute(
+            "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
+            (cnmc_for_a, json.dumps([item_a_id]), canon_desc_a)
+        )
+
+    if not cnmc_for_b:
+        item_b = conn.execute("SELECT canonical_description FROM items WHERE id=?", (item_b_id,)).fetchone()
+        canon_desc_b = item_b["canonical_description"] if item_b else ""
+        cnmc_for_b = get_next_cnmc_code()
+        conn.execute(
+            "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
+            (cnmc_for_b, json.dumps([item_b_id]), canon_desc_b)
+        )
 
     conn.execute("UPDATE match_pairs SET status='rejected' WHERE id=?", (pair_id,))
 
+    details = {
+        "reason": "Manual rejection",
+        "cnmc_a": cnmc_for_a,
+        "cnmc_b": cnmc_for_b
+    }
+
     conn.execute(
-        """INSERT INTO audit_log (action, reviewer, signal, details, match_pair_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        ("rejected", reviewer, "human", json.dumps({"reason": "Manual rejection"}), pair_id)
+        """INSERT INTO audit_log (action, reviewer, signal, details, match_pair_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("rejected", reviewer, "human", json.dumps(details), pair_id,
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
 
     conn.commit()
     conn.close()
-    logger.info(f"❌ Match pair {pair_id} rejected by {reviewer}")
+    logger.info(f"❌ Match pair {pair_id} rejected by {reviewer} (A: {cnmc_for_a}, B: {cnmc_for_b})")
+    
+    return {"cnmc_a": cnmc_for_a, "cnmc_b": cnmc_for_b}
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +492,26 @@ def get_audit_log() -> list:
     rows = conn.execute("SELECT * FROM audit_log ORDER BY created_at DESC").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def log_audit_event(action: str, reviewer: str, signal: str,
+                    details: dict, match_pair_id: int = None):
+    """Insert a single audit log row with a local-time timestamp.
+
+    ``created_at`` is set explicitly via Python's ``datetime.now()`` so the
+    recorded time is the host's local wall-clock time, not SQLite's UTC
+    ``datetime('now')`` default.  Each call captures its own independent
+    timestamp at the exact moment that action is logged.
+    """
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO audit_log (action, reviewer, signal, details, match_pair_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (action, reviewer, signal, json.dumps(details), match_pair_id,
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_cnmc_cross_reference() -> list:
@@ -516,17 +618,30 @@ def get_procurement_intelligence() -> list:
         total_demand = sum(d["quantity_needed"] for d in demand_items)
         total_stock = sum(s["quantity_on_hand"] for s in stock_items)
 
-        # --- Stock-reuse suggestions ---
-        stock_reuse_suggestions = []
+        # Build the set of CPSEs that have active procurement needs.
         demand_cpses = {d["cpse_id"] for d in demand_items}
+
+        # Build per-CPSE stock totals from real quantity_on_hand values only.
         stock_by_cpse = {}
         for s in stock_items:
             stock_by_cpse.setdefault(s["cpse_id"], 0)
             stock_by_cpse[s["cpse_id"]] += s["quantity_on_hand"]
 
+        # --- Stock-reuse suggestions ---
+        # A "get it from CPSE-Y" suggestion is valid ONLY when:
+        #   • CPSE-Y has quantity_on_hand > 0  (real stock, not just a need), AND
+        #   • CPSE-Y is NOT itself in demand_cpses (it is a genuine holder,
+        #     not another CPSE that also has an unmet procurement request).
+        # This prevents suggesting a transfer from a CPSE that only has an open
+        # need recorded in procurement_requests but no actual on-hand inventory.
+        stock_reuse_suggestions = []
         for d in demand_items:
             for s_cpse, s_qty in stock_by_cpse.items():
-                if s_cpse != d["cpse_id"] and s_qty > 0:
+                if (
+                    s_cpse != d["cpse_id"]
+                    and s_qty > 0
+                    and s_cpse not in demand_cpses  # genuine holder, not another needer
+                ):
                     stock_reuse_suggestions.append(
                         f"{d['cpse_id']} needs {d['quantity_needed']} units — "
                         f"{s_cpse} already holds {s_qty} units of this material, "
@@ -537,8 +652,20 @@ def get_procurement_intelligence() -> list:
         stock_reuse_suggestions = list(dict.fromkeys(stock_reuse_suggestions))
 
         # --- Consolidation opportunity ---
+        # Fires ONLY when:
+        #   • 2+ distinct CPSEs have active demand for this CNMC, AND
+        #   • There is NO CPSE outside the demand set that holds genuine stock
+        #     (i.e., no stock-reuse transfer is possible).
+        # This keeps the two paths mutually exclusive: if a genuine transfer
+        # opportunity exists the reuse suggestion is shown; when everyone is a
+        # needer (zero stock anywhere, or all holders are also needers) we
+        # instead recommend a consolidated bulk purchase.
+        has_external_stock = any(
+            cpse not in demand_cpses and qty > 0
+            for cpse, qty in stock_by_cpse.items()
+        )
         consolidation_opportunity = None
-        if len(demand_cpses) >= 2:
+        if len(demand_cpses) >= 2 and not has_external_stock:
             consolidation_opportunity = (
                 f"Consolidated procurement opportunity: {total_demand} total units "
                 f"needed across {len(demand_cpses)} CPSEs — consider bulk purchase/negotiation"

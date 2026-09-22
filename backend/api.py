@@ -97,8 +97,8 @@ async def approve_match(pair_id: int, reviewer: str = "demo_user"):
 async def reject_match(pair_id: int, reviewer: str = "demo_user"):
     """Reject a match pair."""
     try:
-        database.reject_match(pair_id, reviewer)
-        return {"status": "rejected", "pair_id": pair_id}
+        res = database.reject_match(pair_id, reviewer)
+        return {"status": "rejected", "pair_id": pair_id, "cnmc_a": res["cnmc_a"], "cnmc_b": res["cnmc_b"]}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

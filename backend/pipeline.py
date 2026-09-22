@@ -262,21 +262,22 @@ def run_pipeline(csv_path: str = "data/cpse_variants.csv"):
             if status == "auto-approved":
                 database.approve_match(pair_id, reviewer="pipeline_auto", status="auto-approved")
 
-            # Log to audit
-            conn = database.get_connection()
-            conn.execute(
-                """INSERT INTO audit_log (action, reviewer, signal, details)
-                   VALUES (?, ?, ?, ?)""",
-                ("auto_classified", "pipeline",
-                 evidence["signal"],
-                 json.dumps({
-                     "match_type": match_type,
-                     "score": ai_result["combined_score"],
-                     "pair": f"{item_a['local_code']} vs {item_b['local_code']}",
-                 }))
-            )
-            conn.commit()
-            conn.close()
+            # Log to audit — one fresh timestamp per event, captured at
+            # INSERT time by SQLite's datetime('now') column default.
+            # auto-approved pairs already received an audit row inside
+            # approve_match(); only write a row here for pending/rejected.
+            if status != "auto-approved":
+                database.log_audit_event(
+                    action="auto_classified",
+                    reviewer="pipeline",
+                    signal=evidence["signal"],
+                    details={
+                        "match_type": match_type,
+                        "score": ai_result["combined_score"],
+                        "pair": f"{item_a['local_code']} vs {item_b['local_code']}",
+                    },
+                    match_pair_id=pair_id,
+                )
 
             match_type_counts[match_type] = match_type_counts.get(match_type, 0) + 1
 

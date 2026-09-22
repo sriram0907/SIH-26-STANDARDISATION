@@ -238,9 +238,9 @@ with st.sidebar:
     st.markdown("## ⚙️ Navigation")
     page = st.radio(
         "Select View",
-        ["🏠 Dashboard", "🔍 Material Search", "📋 Review Queue", "🔗 CNMC Cross-Reference", 
+        ["🏠 Dashboard", "🔍 Material Search", "📋 Review Queue", "🔗 CNMC Cross-Reference",
          "📈 Procurement Intelligence", "📦 Inventory Visibility", "🏛️ Legacy Code Manager",
-         "📊 Processed Items", "📜 Audit Log"],
+         "📜 Audit Log"],
         label_visibility="collapsed",
     )
 
@@ -419,28 +419,66 @@ def render_review_queue():
         badge_class = get_badge_class(match_type)
         status_class = f"status-{status}"
 
+        # Determine the top-right status text
+        if status in ("approved", "auto-approved", "Auto-Approved"):
+            status_display = f'<span style="color:#43e97b;"><strong>✓ Match Approved</strong></span> → Both mapped to <strong style="color:white;">{match.get("cnmc_id", "")}</strong>'
+        elif status == "rejected":
+            status_display = f'<span style="color:#ff6b6b;"><strong>✗ Match Rejected</strong></span> → Materials remain separate'
+        else:
+            status_display = f'Status: <span class="{status_class}"><strong>{status.upper()}</strong></span>'
+
+        # Fetch existing/assigned CNMCs
+        cnmc_a_badge = f'<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#43e97b;">CNMC: {match.get("cnmc_a", "")}</span></div>' if match.get("cnmc_a") else ''
+        cnmc_b_badge = f'<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#43e97b;">CNMC: {match.get("cnmc_b", "")}</span></div>' if match.get("cnmc_b") else ''
+
         # Card container
         with st.container():
-            cnmc_badge = f'&nbsp;|&nbsp; CNMC: <strong style="color: #43e97b;">{match["cnmc_id"]}</strong>' if match.get("cnmc_id") else ''
             card_html = (
                 f'<div style="background:#1a1a2e;border-radius:12px;padding:1.2rem;margin-bottom:1rem;border:1px solid #2d2d44;box-shadow:0 4px 16px rgba(0,0,0,0.15);">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">'
                 f'<span class="badge {badge_class}">{match_type}</span>'
-                f'<span style="color:#888;font-size:0.85rem;">Confidence: <strong style="color:white;">{confidence:.1f}%</strong> &nbsp;|&nbsp; Status: <span class="{status_class}"><strong>{status.upper()}</strong></span>{cnmc_badge}</span>'
+                f'<span style="color:#888;font-size:0.85rem;">Confidence: <strong style="color:white;">{confidence:.1f}%</strong> &nbsp;|&nbsp; {status_display}</span>'
                 f'</div>'
-                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.8rem;">'
-                f'<div style="background:#16213e;padding:0.8rem;border-radius:8px;">'
-                f'<div style="color:#4facfe;font-size:0.75rem;font-weight:600;margin-bottom:0.3rem;">{match["cpse_a"]} — {match["code_a"]}</div>'
-                f'<div style="color:#ccc;font-size:0.85rem;">{match["desc_a"]}</div>'
-                f'<div style="color:#888;font-size:0.75rem;margin-top:0.3rem;">→ {match.get("canon_a", "N/A")}</div>'
-                f'</div>'
-                f'<div style="background:#16213e;padding:0.8rem;border-radius:8px;">'
-                f'<div style="color:#43e97b;font-size:0.75rem;font-weight:600;margin-bottom:0.3rem;">{match["cpse_b"]} — {match["code_b"]}</div>'
-                f'<div style="color:#ccc;font-size:0.85rem;">{match["desc_b"]}</div>'
-                f'<div style="color:#888;font-size:0.75rem;margin-top:0.3rem;">→ {match.get("canon_b", "N/A")}</div>'
-                f'</div>'
-                f'</div></div>'
             )
+
+            if status in ("approved", "auto-approved", "Auto-Approved"):
+                # Visual relationship display for approved
+                card_html += (
+                    f'<div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem; background:#16213e; padding:1rem; border-radius:8px;">'
+                    f'<div style="text-align:center; flex:1;">'
+                    f'<div style="color:#4facfe;font-size:0.8rem;font-weight:600;">{match["cpse_a"]}</div>'
+                    f'<div style="color:#ccc;font-size:0.9rem;">{match["code_a"]}</div>'
+                    f'</div>'
+                    f'<div style="color:#888; flex:0.5; text-align:center; font-size:1.5rem;">↘</div>'
+                    f'<div style="text-align:center; flex:1; background:#2d2d44; padding:0.5rem; border-radius:8px; border:1px solid #43e97b;">'
+                    f'<div style="color:#43e97b;font-size:1rem;font-weight:700;">{match.get("cnmc_id", "")}</div>'
+                    f'</div>'
+                    f'<div style="color:#888; flex:0.5; text-align:center; font-size:1.5rem;">↙</div>'
+                    f'<div style="text-align:center; flex:1;">'
+                    f'<div style="color:#4facfe;font-size:0.8rem;font-weight:600;">{match["cpse_b"]}</div>'
+                    f'<div style="color:#ccc;font-size:0.9rem;">{match["code_b"]}</div>'
+                    f'</div>'
+                    f'</div>'
+                )
+            else:
+                card_html += (
+                    f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:0.8rem;">'
+                    f'<div style="background:#16213e;padding:0.8rem;border-radius:8px;">'
+                    f'<div style="color:#4facfe;font-size:0.75rem;font-weight:600;margin-bottom:0.3rem;">{match["cpse_a"]} — {match["code_a"]}</div>'
+                    f'<div style="color:#ccc;font-size:0.85rem;">{match["desc_a"]}</div>'
+                    f'<div style="color:#888;font-size:0.75rem;margin-top:0.3rem;">→ {match.get("canon_a", "N/A")}</div>'
+                    f'{cnmc_a_badge}'
+                    f'</div>'
+                    f'<div style="background:#16213e;padding:0.8rem;border-radius:8px;">'
+                    f'<div style="color:#43e97b;font-size:0.75rem;font-weight:600;margin-bottom:0.3rem;">{match["cpse_b"]} — {match["code_b"]}</div>'
+                    f'<div style="color:#ccc;font-size:0.85rem;">{match["desc_b"]}</div>'
+                    f'<div style="color:#888;font-size:0.75rem;margin-top:0.3rem;">→ {match.get("canon_b", "N/A")}</div>'
+                    f'{cnmc_b_badge}'
+                    f'</div>'
+                    f'</div>'
+                )
+                
+            card_html += '</div>'
             st.markdown(card_html, unsafe_allow_html=True)
 
             # Evidence rendering: pending shows directly, others use lazy load
@@ -484,7 +522,7 @@ def render_review_queue():
                         result = api_post(f"/api/matches/{match['id']}/approve")
                         if result:
                             st.cache_data.clear()
-                            st.success(f"Approved! CNMC: {result.get('cnmc_code')}")
+                            st.success(f"Approved! Both mapped to {result.get('cnmc_code')}")
                             st.rerun()
                 with col_btn2:
                     if st.button(f"❌ Reject", key=f"reject_{match['id']}",
@@ -492,7 +530,7 @@ def render_review_queue():
                         result = api_post(f"/api/matches/{match['id']}/reject")
                         if result:
                             st.cache_data.clear()
-                            st.warning("Rejected")
+                            st.warning(f"Rejected! Materials separated (A: {result.get('cnmc_a')}, B: {result.get('cnmc_b')})")
                             st.rerun()
 
             st.markdown("---")
@@ -657,38 +695,7 @@ def _fetch_cnmc_detail(cnmc_code: str):
     return None
 
 
-# ---------------------------------------------------------------------------
-# Page: Processed Items
-# ---------------------------------------------------------------------------
-
-def render_processed_items():
-    """Render all processed items with their classifications."""
-    render_header()
-    st.markdown("### 📊 Processed Items")
-
-    data = api_get("/api/items")
-    if not data or not data.get("items"):
-        st.info("No items processed yet. Run the pipeline first.")
-        return
-
-    items = data["items"]
-    st.markdown(f"**{len(items)} items processed**")
-
-    # Build a clean dataframe
-    rows = []
-    for item in items:
-        rows.append({
-            "CPSE": item["cpse_id"],
-            "Local Code": item["local_code"],
-            "Raw Description": item["raw_description"],
-            "Category": item.get("category", "—"),
-            "Confidence": item.get("category_confidence", "—"),
-            "Path": item.get("classification_path", "—"),
-            "Canonical": item.get("canonical_description", "—"),
-        })
-
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True, height=600)
+# (render_processed_items removed — merged into render_legacy_code_manager)
 
 
 # ---------------------------------------------------------------------------
@@ -906,60 +913,130 @@ def render_inventory_visibility():
             st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# Page: Legacy Code Manager
+# Page: Legacy Code Manager  (merged with former Processed Items)
 # ---------------------------------------------------------------------------
+
+_LEGACY_STATUS_COLORS = {
+    "Merged":      ("#43e97b", "#0a2e1a"),
+    "Retained":    ("#4facfe", "#0a1628"),
+    "Deprecated":  ("#ff6b6b", "#2e0a0a"),
+    "Pending":     ("#ffa751", "#2e1a00"),
+}
+
+def _legacy_status(local_code: str, cnmc_map: dict) -> tuple[str, str]:
+    """Return (legacy_status_label, cnmc_id_or_empty) for a given local_code."""
+    cnmc = cnmc_map.get(local_code)
+    if cnmc:
+        return "Merged", cnmc
+    return "Pending", ""
+
 
 def render_legacy_code_manager():
     render_header()
     st.markdown("### 🏛️ Legacy Code Manager")
-    st.markdown("Track the migration status of CPSE local codes.")
-    
+    st.markdown(
+        "Complete item-level view: classification details from the pipeline "
+        "combined with each code's migration status and CNMC assignment."
+    )
+
     items_data = api_get("/api/items")
-    cnmc_data = api_get("/api/cnmc-codes")
-    
+    cnmc_data  = api_get("/api/cnmc-codes")
+
     if not items_data or not items_data.get("items"):
-        st.info("No items processed yet.")
+        st.info("No items processed yet. Run the pipeline first.")
         return
-        
+
     items = items_data["items"]
-    
-    # Map item id -> CNMC code
-    cnmc_map = {}
+
+    # Build local_code -> CNMC mapping
+    cnmc_map: dict[str, str] = {}
     if cnmc_data and cnmc_data.get("codes"):
         for code_entry in cnmc_data["codes"]:
             cnmc = code_entry["cnmc_code"]
-            for item in code_entry.get("linked_items", []):
-                # Note: /api/cnmc-codes linked_items returns dicts without 'id' usually, wait!
-                # Actually, /api/cnmc-codes linked_items returns dicts with cpse_id and local_code.
-                cnmc_map[item["local_code"]] = cnmc
-                
+            for linked in code_entry.get("linked_items", []):
+                cnmc_map[linked["local_code"]] = cnmc
+
+    # Build unified rows
     rows = []
     for item in items:
-        local_code = item["local_code"]
-        if local_code in cnmc_map:
-            status = f"Merged into {cnmc_map[local_code]}"
-        else:
-            status = "Retained (No matches / Pending)"
-            
+        status, cnmc_id = _legacy_status(item["local_code"], cnmc_map)
         rows.append({
-            "CPSE_ID": item["cpse_id"],
-            "Local_Code": local_code,
-            "Raw_Description": item["raw_description"],
-            "Migration_Status": status
+            "CPSE ID":               item["cpse_id"],
+            "Local Code":            item["local_code"],
+            "Raw Description":       item["raw_description"],
+            "Category":              item.get("category", "—"),
+            "Confidence":            item.get("category_confidence", "—"),
+            "Classification Path":   item.get("classification_path", "—"),
+            "Canonical Description": item.get("canonical_description", "—"),
+            "Legacy Status":         status,
+            "CNMC ID":               cnmc_id,
         })
-        
-    df = pd.DataFrame(rows)
-    
-    csv_data = df.to_csv(index=False).encode('utf-8')
+
+    df_full = pd.DataFrame(rows)
+
+    # ── Summary metrics ────────────────────────────────────────────────────
+    total   = len(df_full)
+    merged  = int((df_full["Legacy Status"] == "Merged").sum())
+    pending = int((df_full["Legacy Status"] == "Pending").sum())
+    retained = int((df_full["Legacy Status"] == "Retained").sum())
+    deprecated = int((df_full["Legacy Status"] == "Deprecated").sum())
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    for col, label, val, css in [
+        (c1, "Total Items",  total,      "blue"),
+        (c2, "Merged",       merged,     "green"),
+        (c3, "Pending",      pending,    "orange"),
+        (c4, "Retained",     retained,   "blue"),
+        (c5, "Deprecated",   deprecated, "red"),
+    ]:
+        with col:
+            st.markdown(f"""
+            <div class="metric-card {css}">
+                <div class="metric-label">{label}</div>
+                <div class="metric-value">{val}</div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Filter bar ─────────────────────────────────────────────────────────
+    col_filter, col_search, _ = st.columns([2, 3, 3])
+    with col_filter:
+        status_filter = st.selectbox(
+            "Filter by Status",
+            ["All", "Merged", "Pending", "Retained", "Deprecated"],
+            key="lcm_status_filter",
+        )
+    with col_search:
+        search_term = st.text_input(
+            "Search (code / description / CNMC)",
+            placeholder="e.g. VALVE, CPSE-A, CNMC-000001",
+            key="lcm_search",
+        )
+
+    df = df_full.copy()
+    if status_filter != "All":
+        df = df[df["Legacy Status"] == status_filter]
+    if search_term:
+        mask = df.apply(
+            lambda r: search_term.upper() in str(r).upper(), axis=1
+        )
+        df = df[mask]
+
+    st.markdown(f"**Showing {len(df)} of {total} items**")
+
+    # ── Export button ──────────────────────────────────────────────────────
+    csv_bytes = df_full.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="📥 Download Migration Report (CSV)",
-        data=csv_data,
-        file_name="legacy_code_migration_report.csv",
+        label="📥 Export Migration Report (CSV)",
+        data=csv_bytes,
+        file_name=f"legacy_migration_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
         mime="text/csv",
         type="primary",
-        use_container_width=True
+        use_container_width=False,
+        key="lcm_csv_export",
     )
-    
+
+    # ── Table ──────────────────────────────────────────────────────────────
     st.dataframe(df, use_container_width=True, hide_index=True, height=600)
 
 # ---------------------------------------------------------------------------
@@ -980,8 +1057,6 @@ elif "📦 Inventory Visibility" in page:
     render_inventory_visibility()
 elif "🏛️ Legacy Code Manager" in page:
     render_legacy_code_manager()
-elif "📊 Processed Items" in page:
-    render_processed_items()
 elif "📜 Audit Log" in page:
     render_audit_log()
 
