@@ -10,6 +10,42 @@ import requests
 import json
 import pandas as pd
 from datetime import datetime
+import threading
+import time
+import uvicorn
+from backend.api import app as fastapi_app
+
+# ---------------------------------------------------------------------------
+# Backend Startup
+# ---------------------------------------------------------------------------
+
+@st.cache_resource(show_spinner=False)
+def start_fastapi():
+    """Start the FastAPI backend in a background thread only once."""
+    def run_server():
+        uvicorn.run(fastapi_app, host="127.0.0.1", port=8000, log_level="warning")
+    
+    # Check if already running
+    try:
+        if requests.get("http://127.0.0.1:8000/docs", timeout=1).status_code == 200:
+            return True
+    except requests.exceptions.ConnectionError:
+        pass
+        
+    thread = threading.Thread(target=run_server, daemon=True)
+    thread.start()
+    
+    # Wait for server to start
+    for _ in range(20):
+        try:
+            if requests.get("http://127.0.0.1:8000/docs", timeout=1).status_code == 200:
+                break
+        except requests.exceptions.ConnectionError:
+            time.sleep(0.5)
+    
+    return True
+
+start_fastapi()
 
 # ---------------------------------------------------------------------------
 # Configuration
