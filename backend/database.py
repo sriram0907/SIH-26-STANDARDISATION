@@ -63,7 +63,18 @@ def init_db():
             cnmc_code   TEXT NOT NULL UNIQUE,
             item_ids    TEXT NOT NULL,
             canonical_description TEXT DEFAULT NULL,
+            status      TEXT DEFAULT 'active',
             created_at  TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS cnmc_merges (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            merged_cnmc TEXT NOT NULL,
+            master_cnmc TEXT NOT NULL,
+            merged_on   TEXT DEFAULT (datetime('now')),
+            approved_by TEXT DEFAULT 'system',
+            confidence_at_merge REAL DEFAULT 0.0,
+            pair_id     INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -100,6 +111,7 @@ def reset_db():
     cursor.executescript("""
         DROP TABLE IF EXISTS procurement_requests;
         DROP TABLE IF EXISTS audit_log;
+        DROP TABLE IF EXISTS cnmc_merges;
         DROP TABLE IF EXISTS cnmc_codes;
         DROP TABLE IF EXISTS match_pairs;
         DROP TABLE IF EXISTS items;
@@ -175,6 +187,9 @@ def get_items_by_category(category: str) -> list:
 def insert_match_pair(item_a_id: int, item_b_id: int, match_type: str,
                       confidence: float, evidence: dict, status: str = 'pending') -> int:
     """Insert a match pair result."""
+    if item_a_id > item_b_id:
+        item_a_id, item_b_id = item_b_id, item_a_id
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -185,6 +200,12 @@ def insert_match_pair(item_a_id: int, item_b_id: int, match_type: str,
     )
     conn.commit()
     pair_id = cursor.lastrowid
+    
+    if not pair_id:
+        row = cursor.execute("SELECT id FROM match_pairs WHERE item_a_id=? AND item_b_id=?", (item_a_id, item_b_id)).fetchone()
+        if row:
+            pair_id = row["id"]
+            
     conn.close()
     return pair_id
 
@@ -273,7 +294,41 @@ def get_next_cnmc_code() -> str:
     return f"CNMC-{next_id:06d}"
 
 
-def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "approved") -> str:
+def auto_resolve_pending_pairs(conn) -> int:
+    """Find any pending pairs where both items now resolve to the SAME active CNMC, and auto-resolve them."""
+    pending = conn.execute("SELECT * FROM match_pairs WHERE status='pending'").fetchall()
+    
+    cnmc_rows = conn.execute("SELECT cnmc_code, item_ids FROM cnmc_codes WHERE status='active'").fetchall()
+    item_to_cnmc = {}
+    for r in cnmc_rows:
+        try:
+            for item_id in json.loads(r["item_ids"]):
+                item_to_cnmc[item_id] = r["cnmc_code"]
+        except json.JSONDecodeError:
+            pass
+
+    resolved_count = 0
+    for pair in pending:
+        cnmc_a = item_to_cnmc.get(pair["item_a_id"])
+        cnmc_b = item_to_cnmc.get(pair["item_b_id"])
+        
+        if cnmc_a and cnmc_b and cnmc_a == cnmc_b:
+            conn.execute("UPDATE match_pairs SET status='auto-resolved', cnmc_id=? WHERE id=?", 
+                         (cnmc_a, pair["id"]))
+            conn.execute(
+                """INSERT INTO audit_log (action, reviewer, signal, details, match_pair_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("auto-resolved", "system", "rule_propagation", 
+                 json.dumps({"cnmc_code": cnmc_a, "reason": "Auto-resolved via prior merge"}), 
+                 pair["id"],
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            )
+            resolved_count += 1
+            
+    return resolved_count
+
+
+def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "approved") -> dict:
     """Approve a match pair: assign or merge CNMC, update audit log.
     
     Uses union-find logic: if either item already belongs to an existing CNMC,
@@ -308,6 +363,7 @@ def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "appr
                           (item_a_id,)).fetchone()
     canon_desc = item_a["canonical_description"] if item_a else ""
 
+    discard_cnmc = None
     if cnmc_for_a and cnmc_for_b:
         if cnmc_for_a["cnmc_code"] == cnmc_for_b["cnmc_code"]:
             # Both already in the same CNMC — just update the match pair
@@ -325,9 +381,14 @@ def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "appr
             # Re-point all match_pairs that referenced the discarded CNMC
             conn.execute("UPDATE match_pairs SET cnmc_id=? WHERE cnmc_id=?",
                          (keep["cnmc_code"], discard["cnmc_code"]))
-            conn.execute("DELETE FROM cnmc_codes WHERE cnmc_code=?",
+            conn.execute("UPDATE cnmc_codes SET status='deprecated' WHERE cnmc_code=?",
                          (discard["cnmc_code"],))
+            conn.execute("""INSERT INTO cnmc_merges 
+                            (merged_cnmc, master_cnmc, approved_by, confidence_at_merge, pair_id)
+                            VALUES (?, ?, ?, ?, ?)""",
+                         (discard["cnmc_code"], keep["cnmc_code"], reviewer, pair["confidence"], pair_id))
             cnmc_code = keep["cnmc_code"]
+            discard_cnmc = discard["cnmc_code"]
     elif cnmc_for_a:
         # Add item B into A's existing CNMC
         existing_ids = set(json.loads(cnmc_for_a["item_ids"]))
@@ -366,11 +427,12 @@ def approve_match(pair_id: int, reviewer: str = "demo_user", status: str = "appr
          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
 
+    auto_resolve_pending_pairs(conn)
     conn.commit()
     conn.close()
 
     logger.info(f"✅ Match pair {pair_id} approved -> {cnmc_code} by {reviewer}")
-    return cnmc_code
+    return {"cnmc_code": cnmc_code, "discard_cnmc": discard_cnmc}
 
 
 def reject_match(pair_id: int, reviewer: str = "demo_user") -> dict:
@@ -397,22 +459,34 @@ def reject_match(pair_id: int, reviewer: str = "demo_user") -> dict:
             cnmc_for_b = cnmc_row["cnmc_code"]
 
     if not cnmc_for_a:
-        item_a = conn.execute("SELECT canonical_description FROM items WHERE id=?", (item_a_id,)).fetchone()
-        canon_desc_a = item_a["canonical_description"] if item_a else ""
-        cnmc_for_a = get_next_cnmc_code()
-        conn.execute(
-            "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
-            (cnmc_for_a, json.dumps([item_a_id]), canon_desc_a)
-        )
+        # Check if item A has any other pending matches
+        pending_a = conn.execute(
+            "SELECT 1 FROM match_pairs WHERE (item_a_id=? OR item_b_id=?) AND status='pending' AND id!=?", 
+            (item_a_id, item_a_id, pair_id)
+        ).fetchone()
+        if not pending_a:
+            item_a = conn.execute("SELECT canonical_description FROM items WHERE id=?", (item_a_id,)).fetchone()
+            canon_desc_a = item_a["canonical_description"] if item_a else ""
+            cnmc_for_a = get_next_cnmc_code()
+            conn.execute(
+                "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
+                (cnmc_for_a, json.dumps([item_a_id]), canon_desc_a)
+            )
 
     if not cnmc_for_b:
-        item_b = conn.execute("SELECT canonical_description FROM items WHERE id=?", (item_b_id,)).fetchone()
-        canon_desc_b = item_b["canonical_description"] if item_b else ""
-        cnmc_for_b = get_next_cnmc_code()
-        conn.execute(
-            "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
-            (cnmc_for_b, json.dumps([item_b_id]), canon_desc_b)
-        )
+        # Check if item B has any other pending matches
+        pending_b = conn.execute(
+            "SELECT 1 FROM match_pairs WHERE (item_a_id=? OR item_b_id=?) AND status='pending' AND id!=?", 
+            (item_b_id, item_b_id, pair_id)
+        ).fetchone()
+        if not pending_b:
+            item_b = conn.execute("SELECT canonical_description FROM items WHERE id=?", (item_b_id,)).fetchone()
+            canon_desc_b = item_b["canonical_description"] if item_b else ""
+            cnmc_for_b = get_next_cnmc_code()
+            conn.execute(
+                "INSERT INTO cnmc_codes (cnmc_code, item_ids, canonical_description) VALUES (?, ?, ?)",
+                (cnmc_for_b, json.dumps([item_b_id]), canon_desc_b)
+            )
 
     conn.execute("UPDATE match_pairs SET status='rejected' WHERE id=?", (pair_id,))
 
@@ -429,6 +503,7 @@ def reject_match(pair_id: int, reviewer: str = "demo_user") -> dict:
          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
 
+    auto_resolve_pending_pairs(conn)
     conn.commit()
     conn.close()
     logger.info(f"❌ Match pair {pair_id} rejected by {reviewer} (A: {cnmc_for_a}, B: {cnmc_for_b})")
@@ -445,7 +520,7 @@ def get_dashboard_stats() -> dict:
     conn = get_connection()
 
     total_items = conn.execute("SELECT COUNT(*) as c FROM items").fetchone()["c"]
-    total_cnmc = conn.execute("SELECT COUNT(*) as c FROM cnmc_codes").fetchone()["c"]
+    total_cnmc = conn.execute("SELECT COUNT(*) as c FROM cnmc_codes WHERE status='active'").fetchone()["c"]
     total_matches = conn.execute("SELECT COUNT(*) as c FROM match_pairs").fetchone()["c"]
     pending = conn.execute("SELECT COUNT(*) as c FROM match_pairs WHERE status='pending'").fetchone()["c"]
     approved = conn.execute("SELECT COUNT(*) as c FROM match_pairs WHERE status IN ('approved', 'auto-approved', 'Auto-Approved')").fetchone()["c"]
@@ -517,7 +592,7 @@ def log_audit_event(action: str, reviewer: str, signal: str,
 def get_cnmc_cross_reference() -> list:
     """Return CNMC cross-reference with linked item details and underlying matches."""
     conn = get_connection()
-    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes ORDER BY id").fetchall()
+    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes WHERE status='active' ORDER BY id").fetchall()
     result = []
     for cnmc in cnmc_rows:
         item_ids = json.loads(cnmc["item_ids"])
@@ -568,10 +643,11 @@ def get_procurement_intelligence() -> list:
     - demand_items: CPSEs with active procurement requests
     - stock_items: CPSEs holding existing stock
     - stock_reuse_suggestions: messages when one CPSE needs and another holds
+
     - consolidation_opportunity: message when 2+ CPSEs have active demand
     """
     conn = get_connection()
-    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes ORDER BY id").fetchall()
+    cnmc_rows = conn.execute("SELECT * FROM cnmc_codes WHERE status='active' ORDER BY id").fetchall()
     proc_rows = conn.execute("SELECT * FROM procurement_requests").fetchall()
 
     # Build item_id -> procurement requests mapping

@@ -380,9 +380,9 @@ def generate_dataset(output_dir: str = "data"):
                 logger.info(f"  🎯 SEEDED stock-reuse scenario: {cpse} needs {canon_id} ({code})")
 
     # --- Consolidation scenarios ---
-    # BOLT-003: force both CPSE-A and CPSE-C to need it
+    # BOLT-008: force all 3 CPSEs to need it
     # VALVE-004: force both CPSE-B and CPSE-C to need it
-    for canon_id, needer_cpses in [("BOLT-003", ["CPSE-A", "CPSE-C"]), ("VALVE-004", ["CPSE-B", "CPSE-C"])]:
+    for canon_id, needer_cpses in [("BOLT-008", ["CPSE-A", "CPSE-B", "CPSE-C"]), ("VALVE-004", ["CPSE-B", "CPSE-C"])]:
         variants = canon_to_variants.get(canon_id, [])
         for cpse, code in variants:
             if cpse in needer_cpses and code not in existing_procurement_codes:

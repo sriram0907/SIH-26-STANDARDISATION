@@ -87,8 +87,8 @@ async def get_matches(status: str = None):
 async def approve_match(pair_id: int, reviewer: str = "demo_user"):
     """Approve a match pair and assign a CNMC code."""
     try:
-        cnmc_code = database.approve_match(pair_id, reviewer)
-        return {"status": "approved", "cnmc_code": cnmc_code, "pair_id": pair_id}
+        res = database.approve_match(pair_id, reviewer)
+        return {"status": "approved", "cnmc_code": res["cnmc_code"], "discard_cnmc": res["discard_cnmc"], "pair_id": pair_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

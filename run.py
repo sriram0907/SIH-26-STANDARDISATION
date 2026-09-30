@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+API_PORT = int(os.getenv("API_PORT", "8000"))
+STREAMLIT_PORT = int(os.getenv("PORT", os.getenv("STREAMLIT_PORT", "8501")))
 
 def generate_data():
     """Generate synthetic data if it doesn't exist."""
@@ -38,10 +40,10 @@ def generate_data():
 
 def start_api_server():
     """Start the FastAPI server in background."""
-    logger.info("🚀 Starting FastAPI server on http://localhost:8000 ...")
+    logger.info("🚀 Starting FastAPI server on http://localhost:%d ...",API_PORT)
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.api:app",
-         "--host", "0.0.0.0", "--port", "8000", "--reload"],
+         "--host", "0.0.0.0", "--port", str(API_PORT)],
         cwd=PROJECT_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -68,11 +70,11 @@ def run_pipeline():
 
 def start_streamlit():
     """Launch Streamlit UI."""
-    logger.info("🌐 Launching Streamlit on http://localhost:8501 ...")
+    logger.info("🌐 Launching Streamlit on http://localhost:%d ...",STREAMLIT_PORT)
     app_path = os.path.join(PROJECT_DIR, "app.py")
     subprocess.run(
         [sys.executable, "-m", "streamlit", "run", app_path,
-         "--server.port", "8501", "--server.headless", "true"],
+         "--server.port", str(STREAMLIT_PORT),"--server.address", "0.0.0.0", "--server.headless", "true"],
         cwd=PROJECT_DIR,
     )
 

@@ -403,9 +403,18 @@ def render_review_queue():
         return
 
     matches = data["matches"]
+
+    if "last_action" in st.session_state and status_filter == "pending":
+        last = st.session_state["last_action"]
+        if not any(m["id"] == last["match"]["id"] for m in matches):
+            last["match"]["status"] = last["new_status"]
+            if last.get("cnmc_code"):
+                last["match"]["cnmc_id"] = last["cnmc_code"]
+            matches.insert(min(last["index"], len(matches)), last["match"])
+
     st.markdown(f"**Showing {len(matches)} match pairs**")
 
-    for match in matches:
+    for idx, match in enumerate(matches):
         match_type = match["match_type"]
         confidence = match["confidence"]
         status = match["status"]
@@ -424,12 +433,14 @@ def render_review_queue():
             status_display = f'<span style="color:#43e97b;"><strong>✓ Match Approved</strong></span> → Both mapped to <strong style="color:white;">{match.get("cnmc_id", "")}</strong>'
         elif status == "rejected":
             status_display = f'<span style="color:#ff6b6b;"><strong>✗ Match Rejected</strong></span> → Materials remain separate'
+        elif status == "auto-resolved":
+            status_display = f'<span style="color:#43e97b;"><strong>✓ Auto-resolved via prior merge</strong></span> → Both mapped to <strong style="color:white;">{match.get("cnmc_id", "")}</strong>'
         else:
             status_display = f'Status: <span class="{status_class}"><strong>{status.upper()}</strong></span>'
 
         # Fetch existing/assigned CNMCs
-        cnmc_a_badge = f'<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#43e97b;">CNMC: {match.get("cnmc_a", "")}</span></div>' if match.get("cnmc_a") else ''
-        cnmc_b_badge = f'<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#43e97b;">CNMC: {match.get("cnmc_b", "")}</span></div>' if match.get("cnmc_b") else ''
+        cnmc_a_badge = f'<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#43e97b;">Current CNMC: {match.get("cnmc_a", "")}</span></div>' if match.get("cnmc_a") else '<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#888;">Current CNMC: Unassigned</span></div>'
+        cnmc_b_badge = f'<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#43e97b;">Current CNMC: {match.get("cnmc_b", "")}</span></div>' if match.get("cnmc_b") else '<div style="margin-top:0.5rem; font-size:0.75rem;"><span style="background:#2d2d44; padding:2px 6px; border-radius:4px; color:#888;">Current CNMC: Unassigned</span></div>'
 
         # Card container
         with st.container():
@@ -441,7 +452,7 @@ def render_review_queue():
                 f'</div>'
             )
 
-            if status in ("approved", "auto-approved", "Auto-Approved"):
+            if status in ("approved", "auto-approved", "Auto-Approved", "auto-resolved"):
                 # Visual relationship display for approved
                 card_html += (
                     f'<div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem; background:#16213e; padding:1rem; border-radius:8px;">'
@@ -522,7 +533,17 @@ def render_review_queue():
                         result = api_post(f"/api/matches/{match['id']}/approve")
                         if result:
                             st.cache_data.clear()
-                            st.success(f"Approved! Both mapped to {result.get('cnmc_code')}")
+                            if result.get("discard_cnmc"):
+                                msg = f"Merged {result.get('discard_cnmc')} into {result.get('cnmc_code')}. Both now resolve to {result.get('cnmc_code')}."
+                            else:
+                                msg = f"Both items assigned to new {result.get('cnmc_code')}."
+                            st.session_state["last_action"] = {
+                                "match": match.copy(),
+                                "index": idx,
+                                "msg": msg,
+                                "new_status": "approved",
+                                "cnmc_code": result.get("cnmc_code")
+                            }
                             st.rerun()
                 with col_btn2:
                     if st.button(f"❌ Reject", key=f"reject_{match['id']}",
@@ -530,8 +551,22 @@ def render_review_queue():
                         result = api_post(f"/api/matches/{match['id']}/reject")
                         if result:
                             st.cache_data.clear()
-                            st.warning(f"Rejected! Materials separated (A: {result.get('cnmc_a')}, B: {result.get('cnmc_b')})")
+                            cnmc_a = result.get('cnmc_a') or 'no code assigned'
+                            cnmc_b = result.get('cnmc_b') or 'no code assigned'
+                            msg = f"No change. CPSE-A retains {cnmc_a}, CPSE-B retains {cnmc_b}."
+                            st.session_state["last_action"] = {
+                                "match": match.copy(),
+                                "index": idx,
+                                "msg": msg,
+                                "new_status": "rejected"
+                            }
                             st.rerun()
+
+            if "last_action" in st.session_state and match["id"] == st.session_state["last_action"]["match"]["id"]:
+                st.info(st.session_state["last_action"]["msg"])
+                if st.button("Dismiss Message", key=f"dismiss_{match['id']}"):
+                    del st.session_state["last_action"]
+                    st.rerun()
 
             st.markdown("---")
 
@@ -787,6 +822,41 @@ def render_procurement_intelligence():
         """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
+    
+    st.markdown("### Demand Aggregation Summary")
+    summary_data = []
+    chart_data = []
+    for g in groups:
+        if g["total_demand"] > 0:
+            cpses = list(set([d["cpse_id"] for d in g["demand_items"]]))
+            summary_data.append({
+                "CNMC Code": g["cnmc_code"],
+                "Total Demand": g["total_demand"],
+                "CPSE Count": len(cpses),
+                "CPSEs": ", ".join(cpses)
+            })
+            for d in g["demand_items"]:
+                chart_data.append({
+                    "CNMC": g["cnmc_code"],
+                    "CPSE": d["cpse_id"],
+                    "Quantity": d["quantity_needed"]
+                })
+                
+    if summary_data:
+        df_summary = pd.DataFrame(summary_data)
+        st.dataframe(df_summary, use_container_width=True, hide_index=True)
+        
+        top_item = df_summary.loc[df_summary["Total Demand"].idxmax()]
+        if top_item["CPSE Count"] > 1:
+            st.info(f"💡 **Insight:** {top_item['CNMC Code']} has demand from {top_item['CPSE Count']} CPSEs for a combined {top_item['Total Demand']:,} units — eligible for consolidated bulk procurement.")
+            
+        st.markdown("**Demand Distribution (Quantity per CPSE)**")
+        df_chart = pd.DataFrame(chart_data)
+        if not df_chart.empty:
+            chart_pivot = df_chart.pivot_table(index="CNMC", columns="CPSE", values="Quantity", aggfunc="sum").fillna(0)
+            st.bar_chart(chart_pivot)
+            
+    st.markdown("---")
 
     # Per-CNMC cards
     for group in groups:
